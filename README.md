@@ -19,6 +19,12 @@ VoxelMill is a local-first browser application for converting textured GLB model
 - Supports palette swatches, exact custom hex colors, and undo/redo history.
 - Mirrors either side across a selectable X/Y/Z grid plane with a live ghost preview.
 - Exports MagicaVoxel VOX 150 files and palette PNGs.
+- Saves compact, versioned `.voxelmill` project files that preserve conversion settings and editable voxel data.
+- Autosaves project bytes to IndexedDB for local crash/reload recovery; model data is never uploaded.
+
+## VoxelMill projects
+
+The `.voxelmill` format is a versioned binary container with a validated manifest, RGB palette, and seven-byte voxel records. Open it through the same file picker used for GLBs. Autosaves use the identical encoder, so downloaded projects and browser recovery follow one compatibility path.
 
 ## Run locally
 

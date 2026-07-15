@@ -19,6 +19,7 @@ import {
   Plus,
   Redo2,
   RefreshCw,
+  Save,
   SlidersHorizontal,
   Sparkles,
   Undo2,
@@ -28,6 +29,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ModelViewport } from './components/ModelViewport';
 import { addVoxel, buildMirrorPreview, mirrorModel, paintVoxel, removeVoxel } from './lib/editVoxels';
 import { loadGlb } from './lib/modelLoader';
+import { decodeVoxelMillProject, downloadVoxelMillProject } from './lib/projectFormat';
+import { loadAutosave, saveAutosave, type RecoveredProject } from './lib/projectStore';
 import { applyVoxelPatch, createVoxelPatch, type VoxelPatch } from './lib/voxelHistory';
 import { isConversionCancelled, voxelizeGlbInWorker } from './lib/voxelizeWorker';
 import { downloadVox } from './lib/voxExport';
@@ -112,6 +115,8 @@ function App() {
   const [dragging, setDragging] = useState(false);
   const [progress, setProgress] = useState<ProgressUpdate>({ progress: 0, label: 'Waiting for a model' });
   const [error, setError] = useState<string | null>(null);
+  const [recovery, setRecovery] = useState<RecoveredProject | null>(null);
+  const [autosaveState, setAutosaveState] = useState<'idle' | 'saving' | 'saved' | 'unavailable'>('idle');
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [tool, setTool] = useState<EditorTool>('orbit');
   const [selectedColor, setSelectedColor] = useState<RGB>({ r: 181, g: 244, b: 59 });
@@ -129,6 +134,23 @@ function App() {
     [mirrorSettings, tool, voxelModel],
   );
 
+  const adoptVoxelModel = useCallback((result: VoxelModel) => {
+    setVoxelModel(result);
+    setHistory({ past: [], future: [] });
+    setTool('orbit');
+    if (result.palette[0]) {
+      setSelectedColor(result.palette[0]);
+      setCustomColor(rgbToHex(result.palette[0]));
+      setCustomColorDraft(rgbToHex(result.palette[0]));
+    }
+    setMirrorSettings({
+      axis: 'x',
+      direction: 'negativeToPositive',
+      plane: Math.max(1, Math.floor(result.size.x / 2)),
+    });
+    setPreviewMode('voxel');
+  }, []);
+
   const convert = useCallback(
     async (file: File, settings = options) => {
       conversionControllerRef.current?.abort();
@@ -140,20 +162,7 @@ function App() {
       setPreviewMode('source');
       try {
         const result = await voxelizeGlbInWorker(file, settings, setProgress, controller.signal);
-        setVoxelModel(result);
-        setHistory({ past: [], future: [] });
-        setTool('orbit');
-        if (result.palette[0]) {
-          setSelectedColor(result.palette[0]);
-          setCustomColor(rgbToHex(result.palette[0]));
-          setCustomColorDraft(rgbToHex(result.palette[0]));
-        }
-        setMirrorSettings({
-          axis: 'x',
-          direction: 'negativeToPositive',
-          plane: Math.max(1, Math.floor(result.size.x / 2)),
-        });
-        setPreviewMode('voxel');
+        adoptVoxelModel(result);
       } catch (conversionError) {
         if (isConversionCancelled(conversionError)) {
           setProgress({ progress: 0, label: 'Conversion cancelled' });
@@ -168,14 +177,15 @@ function App() {
         }
       }
     },
-    [options],
+    [adoptVoxelModel, options],
   );
 
   const receiveFile = useCallback(
     async (file: File | undefined) => {
       if (!file || busy) return;
-      if (!file.name.toLowerCase().endsWith('.glb')) {
-        setError('Please choose a self-contained .glb file.');
+      const lowerName = file.name.toLowerCase();
+      if (!lowerName.endsWith('.glb') && !lowerName.endsWith('.voxelmill')) {
+        setError('Please choose a self-contained .glb or .voxelmill project file.');
         return;
       }
       setBusy(true);
@@ -183,20 +193,61 @@ function App() {
       setVoxelModel(null);
       setHistory({ past: [], future: [] });
       setTool('orbit');
-      setProgress({ progress: 0.02, label: 'Opening GLB model' });
+      setProgress({ progress: 0.02, label: lowerName.endsWith('.voxelmill') ? 'Opening VoxelMill project' : 'Opening GLB model' });
       try {
+        if (lowerName.endsWith('.voxelmill')) {
+          const project = decodeVoxelMillProject(await file.arrayBuffer());
+          sourceFileRef.current = null;
+          setSource(null);
+          setOptions(project.options);
+          adoptVoxelModel(project.model);
+          setProgress({ progress: 1, label: 'VoxelMill project ready' });
+          setBusy(false);
+          return;
+        }
         const loaded = await loadGlb(file);
         sourceFileRef.current = file;
         setSource(loaded);
         setBusy(false);
         await convert(file);
       } catch (loadError) {
-        setError(loadError instanceof Error ? loadError.message : 'The GLB file could not be opened.');
+        setError(loadError instanceof Error ? loadError.message : 'The file could not be opened.');
         setBusy(false);
       }
     },
-    [busy, convert],
+    [adoptVoxelModel, busy, convert],
   );
+
+  useEffect(() => {
+    let active = true;
+    void loadAutosave().then((saved) => {
+      if (active) setRecovery(saved);
+    }).catch(() => {
+      if (active) setAutosaveState('unavailable');
+    });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!voxelModel) return;
+    setAutosaveState('saving');
+    const timer = window.setTimeout(() => {
+      void saveAutosave({ model: voxelModel, options }).then((savedAt) => {
+        setAutosaveState(savedAt === null ? 'unavailable' : 'saved');
+        if (savedAt !== null) setRecovery({ project: { model: voxelModel, options }, savedAt });
+      }).catch(() => setAutosaveState('unavailable'));
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [options, voxelModel]);
+
+  const recoverAutosave = useCallback(() => {
+    if (!recovery) return;
+    sourceFileRef.current = null;
+    setSource(null);
+    setOptions(recovery.project.options);
+    adoptVoxelModel(recovery.project.model);
+    setError(null);
+  }, [adoptVoxelModel, recovery]);
 
   useEffect(() => {
     if (!import.meta.env.DEV) return;
@@ -312,7 +363,7 @@ function App() {
         </div>
         <button className="header-button" type="button" onClick={() => inputRef.current?.click()} disabled={busy}>
           <Upload size={16} />
-          Open GLB
+          Open file
         </button>
       </header>
 
@@ -330,13 +381,14 @@ function App() {
             void receiveFile(event.dataTransfer.files[0]);
           }}
         >
-          {source ? (
+          {source || voxelModel ? (
             <>
               <div className="stage-toolbar">
                 <div className="segmented-control" aria-label="Preview mode">
                   <button
                     className={previewMode === 'source' ? 'active' : ''}
                     onClick={() => setPreviewMode('source')}
+                    disabled={!source}
                     type="button"
                   >
                     <Box size={15} /> Original
@@ -432,8 +484,13 @@ function App() {
                 and exports a MagicaVoxel-ready file.
               </p>
               <button className="primary large" type="button" onClick={() => inputRef.current?.click()}>
-                <Upload size={18} /> Choose a GLB model
+                <Upload size={18} /> Open GLB or project
               </button>
+              {recovery ? (
+                <button className="compact-upload" type="button" onClick={recoverAutosave}>
+                  <RefreshCw size={16} /> Recover autosave from {new Date(recovery.savedAt).toLocaleString()}
+                </button>
+              ) : null}
               <span className="drop-copy">or drag and drop anywhere in this window</span>
               <div className="feature-row">
                 <span><Check size={13} /> PBR base colors</span>
@@ -445,7 +502,7 @@ function App() {
           {dragging ? (
             <div className="drop-overlay">
               <Upload size={38} />
-              <strong>Drop GLB to voxelize</strong>
+              <strong>Drop GLB or VoxelMill project</strong>
             </div>
           ) : null}
         </section>
@@ -465,9 +522,20 @@ function App() {
                     <RefreshCw size={15} />
                   </button>
                 </div>
+              ) : voxelModel ? (
+                <div className="file-card">
+                  <div className="file-icon"><Save size={21} /></div>
+                  <div className="file-copy">
+                    <strong title={voxelModel.sourceName}>{voxelModel.sourceName}</strong>
+                    <span>VoxelMill project · {voxelModel.voxels.length.toLocaleString()} voxels</span>
+                  </div>
+                  <button type="button" onClick={() => inputRef.current?.click()} disabled={busy} title="Open another file">
+                    <RefreshCw size={15} />
+                  </button>
+                </div>
               ) : (
                 <button className="compact-upload" type="button" onClick={() => inputRef.current?.click()}>
-                  <Upload size={17} /> Select a .glb file
+                  <Upload size={17} /> Select GLB or project
                 </button>
               )}
               {source ? (
@@ -761,13 +829,16 @@ function App() {
             </button>
             <div className="export-row">
               <button type="button" disabled={!voxelModel || busy} onClick={() => voxelModel && downloadVox(voxelModel)}>
-                <Download size={16} /> Export .VOX
+                <Download size={16} /> .VOX
+              </button>
+              <button type="button" disabled={!voxelModel || busy} onClick={() => voxelModel && downloadVoxelMillProject({ model: voxelModel, options })}>
+                <Save size={16} /> Project
               </button>
               <button type="button" disabled={!voxelModel || busy} onClick={() => voxelModel && downloadPalette(voxelModel)} title="Export palette PNG">
                 <ImageIcon size={16} /> Palette
               </button>
             </div>
-            <div className="format-note"><Palette size={13} /> MagicaVoxel palette · Z-up export</div>
+            <div className="format-note"><Palette size={13} /> {autosaveState === 'saving' ? 'Saving locally…' : autosaveState === 'saved' ? 'Autosaved locally' : autosaveState === 'unavailable' ? 'Autosave unavailable' : 'Local-first project storage'}</div>
           </div>
         </aside>
       </main>
@@ -776,7 +847,7 @@ function App() {
         ref={inputRef}
         hidden
         type="file"
-        accept=".glb,model/gltf-binary"
+        accept=".glb,.voxelmill,model/gltf-binary,application/x-voxelmill-project"
         onChange={(event) => {
           void receiveFile(event.target.files?.[0]);
           event.target.value = '';
