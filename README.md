@@ -30,11 +30,16 @@ Then open `http://localhost:4173`.
 ## Production build
 
 ```bash
-npm run test
-npm run build
+npm run check
 ```
 
-The static output is written to `dist/`.
+This runs unit tests, creates the static output in `dist/`, and enforces the bundle budgets in `quality/budgets.json`. The full baseline and regression protocol are documented in `docs/quality-baseline.md`.
+
+To inspect the structure and identity of private GLB regression assets without checking them into Git:
+
+```bash
+npm run inventory:glb -- /path/to/model.glb
+```
 
 ## Deploy to Cloudflare Pages
 

@@ -74,6 +74,9 @@ const labDistance = (a: Lab, b: Lab) => {
   return dl * dl + da * da + db * db;
 };
 
+export const perceptualColorDistance = (a: RGB, b: RGB) =>
+  Math.sqrt(labDistance(rgbToOklab(a), rgbToOklab(b))) * 100;
+
 function averageLab(colors: WeightedColor[], weight: number): Lab {
   let l = 0;
   let a = 0;
