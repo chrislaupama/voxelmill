@@ -58,7 +58,12 @@ function getTexturePixels(texture: Texture): TexturePixels | null {
   const scale = Math.min(1, 2048 / Math.max(sourceWidth, sourceHeight));
   const width = Math.max(1, Math.round(sourceWidth * scale));
   const height = Math.max(1, Math.round(sourceHeight * scale));
-  const canvas = document.createElement('canvas');
+  const canvas = typeof OffscreenCanvas !== 'undefined'
+    ? new OffscreenCanvas(width, height)
+    : typeof document !== 'undefined'
+      ? document.createElement('canvas')
+      : null;
+  if (!canvas) return null;
   canvas.width = width;
   canvas.height = height;
   const context = canvas.getContext('2d', { willReadFrequently: true });
@@ -287,7 +292,10 @@ function solidFill(
   }
 }
 
-const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+const nextFrame = () => new Promise<void>((resolve) => {
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve());
+  else setTimeout(resolve, 0);
+});
 
 export async function voxelizeModel(
   source: SourceModel,

@@ -2,6 +2,7 @@ import {
   Box,
   Check,
   ChevronDown,
+  CircleStop,
   Cuboid,
   Download,
   Eraser,
@@ -27,7 +28,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ModelViewport } from './components/ModelViewport';
 import { addVoxel, buildMirrorPreview, mirrorModel, paintVoxel, removeVoxel } from './lib/editVoxels';
 import { loadGlb } from './lib/modelLoader';
-import { voxelizeModel } from './lib/voxelize';
+import { isConversionCancelled, voxelizeGlbInWorker } from './lib/voxelizeWorker';
 import { downloadVox } from './lib/voxExport';
 import type {
   EditorTool,
@@ -93,12 +94,16 @@ function downloadPalette(model: VoxelModel) {
 
 function App() {
   const inputRef = useRef<HTMLInputElement>(null);
+  const sourceFileRef = useRef<File | null>(null);
+  const conversionControllerRef = useRef<AbortController | null>(null);
+  const developmentFixtureRef = useRef<string | null>(null);
   const [source, setSource] = useState<SourceModel | null>(null);
   const [voxelModel, setVoxelModel] = useState<VoxelModel | null>(null);
   const [options, setOptions] = useState(DEFAULT_OPTIONS);
   const [previewMode, setPreviewMode] = useState<'source' | 'voxel'>('source');
   const [showGrid, setShowGrid] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [canCancel, setCanCancel] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [progress, setProgress] = useState<ProgressUpdate>({ progress: 0, label: 'Waiting for a model' });
   const [error, setError] = useState<string | null>(null);
@@ -120,12 +125,16 @@ function App() {
   );
 
   const convert = useCallback(
-    async (model: SourceModel, settings = options) => {
+    async (file: File, settings = options) => {
+      conversionControllerRef.current?.abort();
+      const controller = new AbortController();
+      conversionControllerRef.current = controller;
       setBusy(true);
+      setCanCancel(true);
       setError(null);
       setPreviewMode('source');
       try {
-        const result = await voxelizeModel(model, settings, setProgress);
+        const result = await voxelizeGlbInWorker(file, settings, setProgress, controller.signal);
         setVoxelModel(result);
         setHistory({ past: [], future: [] });
         setTool('orbit');
@@ -141,9 +150,17 @@ function App() {
         });
         setPreviewMode('voxel');
       } catch (conversionError) {
-        setError(conversionError instanceof Error ? conversionError.message : 'The model could not be converted.');
+        if (isConversionCancelled(conversionError)) {
+          setProgress({ progress: 0, label: 'Conversion cancelled' });
+        } else {
+          setError(conversionError instanceof Error ? conversionError.message : 'The model could not be converted.');
+        }
       } finally {
-        setBusy(false);
+        if (conversionControllerRef.current === controller) {
+          conversionControllerRef.current = null;
+          setCanCancel(false);
+          setBusy(false);
+        }
       }
     },
     [options],
@@ -164,9 +181,10 @@ function App() {
       setProgress({ progress: 0.02, label: 'Opening GLB model' });
       try {
         const loaded = await loadGlb(file);
+        sourceFileRef.current = file;
         setSource(loaded);
         setBusy(false);
-        await convert(loaded);
+        await convert(file);
       } catch (loadError) {
         setError(loadError instanceof Error ? loadError.message : 'The GLB file could not be opened.');
         setBusy(false);
@@ -174,6 +192,23 @@ function App() {
     },
     [busy, convert],
   );
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const fixture = new URLSearchParams(window.location.search).get('fixture');
+    if (!fixture || developmentFixtureRef.current === fixture) return;
+    developmentFixtureRef.current = fixture;
+    void fetch(fixture).then(async (response) => {
+      if (!response.ok) throw new Error(`Fixture request failed with HTTP ${response.status}.`);
+      const blob = await response.blob();
+      const name = decodeURIComponent(fixture.split('/').pop() || 'fixture.glb');
+      await receiveFile(new File([blob], name, { type: 'model/gltf-binary' }));
+    }).catch((fixtureError: unknown) => {
+      setError(fixtureError instanceof Error ? fixtureError.message : 'The development fixture could not be loaded.');
+    });
+  }, [receiveFile]);
+
+  useEffect(() => () => conversionControllerRef.current?.abort(), []);
 
   const updateOption = <K extends keyof VoxelizeOptions>(key: K, value: VoxelizeOptions[K]) => {
     setOptions((current) => ({ ...current, [key]: value }));
@@ -358,13 +393,18 @@ function App() {
                   : 'DRAG TO ORBIT · SCROLL TO ZOOM · RIGHT-DRAG TO PAN'}
               </div>
               {busy ? (
-                <div className="processing-card">
+                <div className="processing-card" aria-live="polite">
                   <div className="processing-head">
                     <LoaderCircle className="spin" size={18} />
                     <span>{progress.label}</span>
                     <strong>{Math.round(progress.progress * 100)}%</strong>
+                    {canCancel ? (
+                      <button className="processing-cancel" type="button" onClick={() => conversionControllerRef.current?.abort()}>
+                        <CircleStop size={14} /> Cancel
+                      </button>
+                    ) : null}
                   </div>
-                  <div className="progress-track">
+                  <div className="progress-track" role="progressbar" aria-label="Voxel conversion" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress.progress * 100)}>
                     <span style={{ width: `${progress.progress * 100}%` }} />
                   </div>
                 </div>
@@ -678,11 +718,14 @@ function App() {
             <button
               className="primary convert-button"
               type="button"
-              disabled={!source || busy}
-              onClick={() => source && void convert(source)}
+              disabled={!source || (busy && !canCancel)}
+              onClick={() => {
+                if (busy) conversionControllerRef.current?.abort();
+                else if (sourceFileRef.current) void convert(sourceFileRef.current);
+              }}
             >
-              {busy ? <LoaderCircle className="spin" size={17} /> : <Cuboid size={17} />}
-              {busy ? 'Voxelizing…' : voxelModel ? 'Rebuild voxel model' : 'Voxelize model'}
+              {busy ? canCancel ? <CircleStop size={17} /> : <LoaderCircle className="spin" size={17} /> : <Cuboid size={17} />}
+              {busy ? canCancel ? 'Cancel conversion' : 'Opening model…' : voxelModel ? 'Rebuild voxel model' : 'Voxelize model'}
             </button>
             <div className="export-row">
               <button type="button" disabled={!voxelModel || busy} onClick={() => voxelModel && downloadVox(voxelModel)}>

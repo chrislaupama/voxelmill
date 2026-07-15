@@ -31,9 +31,20 @@ const sum = (extension, field = 'bytes') => measurements
   .filter((measurement) => measurement.file.endsWith(extension))
   .reduce((total, measurement) => total + measurement[field], 0);
 
+const document = await readFile(path.join(distDirectory, 'index.html'), 'utf8');
+const initialJavaScriptFiles = new Set(
+  [...document.matchAll(/<script[^>]+src=["']([^"']+\.js)["']/gu)]
+    .map((match) => match[1].replace(/^\//u, '')),
+);
+const sumInitialJavaScript = (field = 'bytes') => measurements
+  .filter((measurement) => initialJavaScriptFiles.has(measurement.file))
+  .reduce((total, measurement) => total + measurement[field], 0);
+
 const totals = {
-  initialJavaScriptBytes: sum('.js'),
-  initialJavaScriptGzipBytes: sum('.js', 'gzipBytes'),
+  initialJavaScriptBytes: sumInitialJavaScript(),
+  initialJavaScriptGzipBytes: sumInitialJavaScript('gzipBytes'),
+  totalJavaScriptBytes: sum('.js'),
+  totalJavaScriptGzipBytes: sum('.js', 'gzipBytes'),
   stylesheetBytes: sum('.css'),
   documentBytes: sum('.html'),
 };
@@ -43,7 +54,7 @@ const failures = Object.entries(budgets).flatMap(([metric, budget]) => {
   return actual > budget ? [`${metric}: ${actual.toLocaleString()} > ${budget.toLocaleString()}`] : [];
 });
 
-console.log(JSON.stringify({ totals, budgets, files: measurements }, null, 2));
+console.log(JSON.stringify({ totals, budgets, initialJavaScriptFiles: [...initialJavaScriptFiles], files: measurements }, null, 2));
 if (failures.length) {
   console.error(`Bundle budgets exceeded:\n- ${failures.join('\n- ')}`);
   process.exitCode = 1;

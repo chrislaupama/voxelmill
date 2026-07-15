@@ -85,6 +85,9 @@ button { color: inherit; }
 .processing-head { display: flex; align-items: center; gap: 9px; color: #dce2d4; font-size: 11px; font-weight: 650; }
 .processing-head svg { color: var(--lime); }
 .processing-head strong { margin-left: auto; color: var(--lime); font-size: 11px; }
+.processing-cancel { display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px; border: 1px solid #555f4b; border-radius: 5px; background: transparent; color: #cdd4c5; font: inherit; cursor: pointer; }
+.processing-cancel:hover { border-color: #d97772; color: #ffd4d1; background: rgba(215,85,80,.12); }
+.processing-head .processing-cancel svg { color: currentColor; }
 .progress-track { height: 3px; margin-top: 12px; overflow: hidden; border-radius: 3px; background: #30352b; }
 .progress-track span { display: block; height: 100%; border-radius: inherit; background: var(--lime); transition: width .2s ease; }
 .spin { animation: spin 1s linear infinite; }

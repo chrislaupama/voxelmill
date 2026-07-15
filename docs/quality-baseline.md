@@ -19,6 +19,8 @@ At capture time there are 14 passing unit tests across five files. The productio
 | --- | ---: | ---: |
 | Initial JavaScript | 1,175,034 B | 1,200,000 B |
 | Initial JavaScript (gzip) | 327,579 B | 340,000 B |
+| Total JavaScript | 1,175,034 B | 1,500,000 B |
+| Total JavaScript (gzip) | 327,579 B | 410,000 B |
 | Stylesheet | 17,387 B | 18,000 B |
 | HTML document | 964 B | 2,000 B |
 
@@ -64,3 +66,5 @@ The next harness milestone must add synthetic textured GLBs with known expected 
 ## Performance protocol
 
 Browser benchmarks should record browser version, device, input hash, mode, resolution, palette size, alpha threshold, total duration, peak voxel count, output fingerprint, and palette/occupancy metrics. The benchmark is valid only when the UI remains responsive, progress is monotonic, cancellation completes promptly, and a repeated run produces the same fingerprint.
+
+Development builds accept a `fixture` query parameter so browser automation can load a model through Vite's explicitly configured `VOXEL_TEST_ASSET_DIR` without exposing a production file-loading endpoint. This exercises the same `File` ingestion and background conversion path as manual selection.

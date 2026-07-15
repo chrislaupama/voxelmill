@@ -4,6 +4,10 @@ import type { SourceModel } from '../types';
 
 export async function loadGlb(file: File): Promise<SourceModel> {
   const buffer = await file.arrayBuffer();
+  return loadGlbBuffer(buffer, file.name, file.size);
+}
+
+export async function loadGlbBuffer(buffer: ArrayBuffer, name: string, bytes = buffer.byteLength): Promise<SourceModel> {
   const gltf = await new GLTFLoader().parseAsync(buffer, '');
   let triangles = 0;
   let meshes = 0;
@@ -28,8 +32,8 @@ export async function loadGlb(file: File): Promise<SourceModel> {
 
   return {
     scene: gltf.scene,
-    name: file.name,
-    bytes: file.size,
+    name,
+    bytes,
     triangles,
     meshes,
     materials: materials.size,
