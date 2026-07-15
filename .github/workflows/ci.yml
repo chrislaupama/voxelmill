@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  deployments: write
 
 jobs:
   verify:
@@ -20,6 +21,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: production-dist
+          path: dist
+          retention-days: 3
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
       - if: failure()
@@ -28,3 +34,28 @@ jobs:
           name: playwright-report
           path: playwright-report
           retention-days: 7
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: production-dist
+          path: dist
+      - id: deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=voxelmill --branch=main
+      - name: Verify immutable deployment
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          curl --fail --silent --show-error --max-time 20 "$DEPLOYMENT_URL/" --output deployment.html
+          grep --fixed-strings 'VoxelMill' deployment.html
