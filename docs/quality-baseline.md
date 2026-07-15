@@ -15,16 +15,18 @@ npm run check
 
 The production output is bounded by `quality/budgets.json`; budget changes must accompany a user-facing capability or a measured optimization:
 
-| Resource | Baseline | Maximum |
+| Resource | Current measurement | Maximum |
 | --- | ---: | ---: |
-| Initial JavaScript | 1,175,034 B | 300,000 B |
-| Initial JavaScript (gzip) | 327,579 B | 90,000 B |
-| Total JavaScript | 1,175,034 B | 1,500,000 B |
-| Total JavaScript (gzip) | 327,579 B | 410,000 B |
-| Stylesheet | 17,387 B | 20,000 B |
-| HTML document | 964 B | 2,000 B |
+| Initial JavaScript | 258,401 B | 300,000 B |
+| Initial JavaScript (gzip) | 79,844 B | 90,000 B |
+| Total JavaScript | 1,447,607 B | 1,500,000 B |
+| Total JavaScript (gzip) | 404,792 B | 410,000 B |
+| Stylesheet | 24,945 B | 26,000 B |
+| HTML document | 1,190 B | 2,000 B |
 
-Budgets are ceilings, not targets. The 3D renderer and GLB loader are loaded on demand, reducing initial JavaScript to roughly 249 KB raw / 77 KB gzip while keeping total JavaScript separately bounded.
+Budgets are ceilings, not targets. The 3D renderer, GLB loader, and AI Palette Studio are loaded on demand, keeping total JavaScript separately bounded.
+
+AI Palette Studio adds a measured 17.9 KB lazy JavaScript chunk (6.1 KB gzip), and the palette controls raised the stylesheet ceiling from 20 KB to 26 KB. It does not load until a voxel model exists and the user opens the studio. The measured initial bundle remains 258,401 B raw / 79,844 B gzip; total JavaScript is 1,447,607 B raw / 404,792 B gzip.
 
 ## Representative real assets
 

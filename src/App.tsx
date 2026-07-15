@@ -43,8 +43,9 @@ import {
 import { decodeVoxelMillProject, downloadVoxelMillProject } from './lib/projectFormat';
 import { loadAutosave, saveAutosave, type RecoveredProject } from './lib/projectStore';
 import { compactPalette, replacePaletteColor, sortPalette } from './lib/paletteEditing';
+import type { PaletteRemapPlan } from './lib/paletteRemap';
 import { downloadQb } from './lib/qbExport';
-import { applyVoxelPatch, createVoxelPatch, type VoxelPatch } from './lib/voxelHistory';
+import { applyVoxelPatch, createVoxelPatch, voxelPatchHasChanges, type VoxelPatch } from './lib/voxelHistory';
 import { packVoxelCoordinate } from './lib/voxelIndex';
 import { isConversionCancelled, voxelizeGlbInWorker } from './lib/voxelizeWorker';
 import { downloadVox } from './lib/voxExport';
@@ -65,6 +66,7 @@ import type {
 } from './types';
 
 const ModelViewport = lazy(() => import('./components/ModelViewport').then((module) => ({ default: module.ModelViewport })));
+const AiPaletteStudio = lazy(() => import('./components/AiPaletteStudio').then((module) => ({ default: module.AiPaletteStudio })));
 
 const DEFAULT_OPTIONS: VoxelizeOptions = {
   resolution: 64,
@@ -162,6 +164,8 @@ function App() {
     plane: 1,
   });
   const [history, setHistory] = useState<{ past: VoxelPatch[]; future: VoxelPatch[] }>({ past: [], future: [] });
+  const [aiStudioOpen, setAiStudioOpen] = useState(false);
+  const [aiPreview, setAiPreview] = useState<{ base: VoxelModel; plan: PaletteRemapPlan } | null>(null);
 
   const mirrorPreview = useMemo(
     () => voxelModel && tool === 'mirror' ? buildMirrorPreview(voxelModel, mirrorSettings) : [],
@@ -173,6 +177,7 @@ function App() {
   );
 
   const adoptVoxelModel = useCallback((result: VoxelModel) => {
+    setAiPreview(null);
     setVoxelModel(result);
     setHistory({ past: [], future: [] });
     setSelection(new Set());
@@ -312,8 +317,9 @@ function App() {
   const commitEdit = useCallback((next: VoxelModel) => {
     if (!voxelModel || next === voxelModel) return;
     const patch = createVoxelPatch(voxelModel, next);
-    if (!patch.changes.length) return;
+    if (!voxelPatchHasChanges(patch)) return;
     setHistory((current) => ({ past: [...current.past, patch].slice(-100), future: [] }));
+    setAiPreview(null);
     setVoxelModel(next);
   }, [voxelModel]);
 
@@ -321,6 +327,7 @@ function App() {
     if (!voxelModel || !history.past.length) return;
     const patch = history.past[history.past.length - 1];
     setHistory({ past: history.past.slice(0, -1), future: [patch, ...history.future].slice(0, 100) });
+    setAiPreview(null);
     setVoxelModel(applyVoxelPatch(voxelModel, patch, 'undo'));
     setSelection(new Set());
   }, [history, voxelModel]);
@@ -329,6 +336,7 @@ function App() {
     if (!voxelModel || !history.future.length) return;
     const patch = history.future[0];
     setHistory({ past: [...history.past, patch].slice(-100), future: history.future.slice(1) });
+    setAiPreview(null);
     setVoxelModel(applyVoxelPatch(voxelModel, patch, 'redo'));
     setSelection(new Set());
   }, [history, voxelModel]);
@@ -438,6 +446,22 @@ function App() {
     }));
   };
 
+  const previewAiPalette = useCallback((base: VoxelModel, preview: PaletteRemapPlan | null) => {
+    setPreviewMode('voxel');
+    setTool('orbit');
+    setAiPreview((current) => preview ? { base, plan: preview } : current?.base === base ? null : current);
+  }, []);
+
+  const applyAiPalette = useCallback((base: VoxelModel, result: VoxelModel) => {
+    if (voxelModel !== base) {
+      setAiPreview(null);
+      return false;
+    }
+    commitEdit(result);
+    setSelectedPaletteIndex(null);
+    return true;
+  }, [commitEdit, voxelModel]);
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -483,7 +507,7 @@ function App() {
                     className={previewMode === 'source' ? 'active' : ''}
                     aria-pressed={previewMode === 'source'}
                     onClick={() => setPreviewMode('source')}
-                    disabled={!source}
+                    disabled={!source || Boolean(aiPreview)}
                     type="button"
                   >
                     <Box size={15} /> Original
@@ -508,7 +532,7 @@ function App() {
                   <Grid3X3 size={17} />
                 </button>
               </div>
-              {voxelModel && previewMode === 'voxel' ? (
+              {voxelModel && previewMode === 'voxel' && !aiPreview ? (
                 <div className="editor-toolbar" aria-label="Voxel editing tools">
                   <div className="editor-tool-group">
                     <button className={tool === 'orbit' ? 'active' : ''} aria-pressed={tool === 'orbit'} aria-keyshortcuts="Q" type="button" onClick={() => activateTool('orbit')} title="Orbit (Q)">
@@ -548,16 +572,19 @@ function App() {
                   model={voxelModel}
                   mode={previewMode}
                   showGrid={showGrid}
-                  tool={tool}
+                  tool={aiPreview ? 'orbit' : tool}
                   mirrorSettings={mirrorSettings}
-                  mirrorPreview={mirrorPreview}
-                  selectedVoxels={selectedVoxels}
+                  mirrorPreview={aiPreview ? [] : mirrorPreview}
+                  selectedVoxels={aiPreview ? [] : selectedVoxels}
+                  palettePreview={aiPreview?.plan}
                   slice={slice}
                   onVoxelAction={handleVoxelAction}
                 />
               </Suspense>
               <div className="view-hint">
-                {previewMode === 'voxel' && tool !== 'orbit'
+                {aiPreview
+                  ? 'AI PALETTE PREVIEW · CHOOSE CURRENT OR CANDIDATE IN THE STUDIO'
+                  : previewMode === 'voxel' && tool !== 'orbit'
                   ? tool === 'mirror' ? 'GHOST VOXELS SHOW THE MIRRORED RESULT · DRAG TO ORBIT' : `CLICK A VOXEL TO ${TOOL_LABELS[tool].toUpperCase()} · DRAG TO ORBIT`
                   : 'DRAG TO ORBIT · SCROLL TO ZOOM · RIGHT-DRAG TO PAN'}
               </div>
@@ -763,6 +790,43 @@ function App() {
                 </div>
               ) : null}
             </section>
+
+            {voxelModel ? (
+              <section className="panel-section ai-panel-section">
+                <div className="section-title">
+                  <div><Sparkles size={16} /> AI PALETTE STUDIO</div>
+                  <span>OPT-IN</span>
+                </div>
+                {!aiStudioOpen ? <p className="ai-panel-intro">Describe an art direction, compare three coherent palette concepts on the model, then apply one as a single undoable edit.</p> : null}
+                <button
+                  className={aiStudioOpen ? 'advanced-toggle ai-close-toggle' : 'compact-upload ai-open-button'}
+                  type="button"
+                  aria-expanded={aiStudioOpen}
+                  aria-controls="ai-palette-studio"
+                  onClick={() => {
+                    setAiStudioOpen((open) => !open);
+                    setAiPreview(null);
+                    setPreviewMode('voxel');
+                    setTool('orbit');
+                  }}
+                >
+                  {aiStudioOpen ? <>Close studio <ChevronDown className="rotated" size={15} /></> : <><Sparkles size={15} /> Open AI Palette Studio</>}
+                </button>
+                {aiStudioOpen ? (
+                  <div id="ai-palette-studio">
+                    <Suspense fallback={<div className="ai-component-loading"><LoaderCircle className="spin" size={16} /> Loading Palette Studio…</div>}>
+                      <AiPaletteStudio
+                        model={voxelModel}
+                        selection={selection}
+                        selectedVoxelCount={selectedVoxels.length}
+                        onPreview={previewAiPalette}
+                        onApply={applyAiPalette}
+                      />
+                    </Suspense>
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
 
             {voxelModel ? (
               <section className="panel-section editor-section">

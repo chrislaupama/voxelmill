@@ -18,6 +18,8 @@ import type {
   VoxelCoordinate,
   VoxelModel,
 } from '../types';
+import type { PaletteRemapPlan } from '../lib/paletteRemap';
+import { packVoxelCoordinate } from '../lib/voxelIndex';
 
 interface Props {
   source: SourceModel | null;
@@ -28,6 +30,7 @@ interface Props {
   mirrorSettings: MirrorSettings;
   mirrorPreview: Voxel[];
   selectedVoxels: Voxel[];
+  palettePreview?: PaletteRemapPlan | null;
   slice: { enabled: boolean; axis: MirrorSettings['axis']; index: number };
   onVoxelAction: (voxel: Voxel, normal: VoxelCoordinate) => void;
 }
@@ -36,6 +39,8 @@ interface VoxelInstancesProps {
   voxels: Voxel[];
   size: VoxelModel['size'];
   geometry: BoxGeometry;
+  palette: VoxelModel['palette'];
+  palettePreview?: PaletteRemapPlan | null;
   interactive: boolean;
   onHover: (voxel: Voxel, normal: VoxelCoordinate) => void;
   onHoverEnd: () => void;
@@ -51,6 +56,8 @@ function VoxelInstances({
   voxels,
   size,
   geometry,
+  palette,
+  palettePreview,
   interactive,
   onHover,
   onHoverEnd,
@@ -74,12 +81,29 @@ function VoxelInstances({
       );
       helper.updateMatrix();
       mesh.current!.setMatrixAt(index, helper.matrix);
-      workingColor.setRGB(voxel.r / 255, voxel.g / 255, voxel.b / 255, SRGBColorSpace);
-      mesh.current!.setColorAt(index, workingColor);
     });
     mesh.current.instanceMatrix.needsUpdate = true;
-    if (mesh.current.instanceColor) mesh.current.instanceColor.needsUpdate = true;
-  }, [helper, size, voxels, workingColor]);
+  }, [helper, size, voxels]);
+
+  useLayoutEffect(() => {
+    if (!mesh.current || !voxels.length) return;
+    if (!mesh.current.instanceColor) {
+      workingColor.setRGB(1, 1, 1);
+      mesh.current.setColorAt(0, workingColor);
+    }
+    const attribute = mesh.current.instanceColor;
+    if (!attribute) return;
+    const plan = palettePreview;
+    voxels.forEach((voxel, index) => {
+      const previewed = plan && (plan.scope === 'model'
+        || plan.selection?.has(packVoxelCoordinate(voxel)));
+      const previewIndex = previewed ? plan.colorIndexBySource.get(voxel.colorIndex) : undefined;
+      const color = previewIndex === undefined ? palette[voxel.colorIndex] ?? voxel : plan?.palette[previewIndex] ?? voxel;
+      workingColor.setRGB(color.r / 255, color.g / 255, color.b / 255, SRGBColorSpace);
+      attribute.setXYZ(index, workingColor.r, workingColor.g, workingColor.b);
+    });
+    attribute.needsUpdate = true;
+  }, [palette, palettePreview, voxels, workingColor]);
 
   const voxelFromEvent = (event: ThreeEvent<MouseEvent>) =>
     event.instanceId === undefined ? undefined : voxels[event.instanceId];
@@ -166,11 +190,12 @@ interface VoxelMeshProps {
   mirrorSettings: MirrorSettings;
   mirrorPreview: Voxel[];
   selectedVoxels: Voxel[];
+  palettePreview?: PaletteRemapPlan | null;
   slice: Props['slice'];
   onVoxelAction: Props['onVoxelAction'];
 }
 
-function VoxelMesh({ model, tool, mirrorSettings, mirrorPreview, selectedVoxels, slice, onVoxelAction }: VoxelMeshProps) {
+function VoxelMesh({ model, tool, mirrorSettings, mirrorPreview, selectedVoxels, palettePreview, slice, onVoxelAction }: VoxelMeshProps) {
   const [hovered, setHovered] = useState<VoxelCoordinate | null>(null);
   const geometry = useMemo(() => new BoxGeometry(0.94, 0.94, 0.94), []);
   const scale = 3.6 / Math.max(model.size.x, model.size.y, model.size.z);
@@ -198,6 +223,8 @@ function VoxelMesh({ model, tool, mirrorSettings, mirrorPreview, selectedVoxels,
         voxels={visibleVoxels}
         size={model.size}
         geometry={geometry}
+        palette={model.palette}
+        palettePreview={palettePreview}
         interactive={interactive}
         onHover={updateHover}
         onHoverEnd={() => setHovered(null)}
@@ -241,6 +268,7 @@ export function ModelViewport({
   mirrorSettings,
   mirrorPreview,
   selectedVoxels,
+  palettePreview,
   slice,
   onVoxelAction,
 }: Props) {
@@ -268,6 +296,7 @@ export function ModelViewport({
             mirrorSettings={mirrorSettings}
             mirrorPreview={mirrorPreview}
             selectedVoxels={selectedVoxels}
+            palettePreview={palettePreview}
             slice={slice}
             onVoxelAction={onVoxelAction}
           />

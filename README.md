@@ -17,6 +17,8 @@ VoxelMill is a local-first browser application for converting textured GLB model
 - Previews the result with instanced Three.js geometry.
 - Adds, erases, and paints voxels directly in the 3D viewport.
 - Supports palette swatches, exact custom hex colors, and undo/redo history.
+- Offers an opt-in AI Palette Studio that proposes three art directions from a prompt, previews them on the model, preserves locked swatches, and applies either the whole model or the current selection.
+- Keeps AI recoloring deterministic and local: the service receives only the prompt, swatches, lock flags, and color usage counts—never the GLB, voxel geometry, or coordinates.
 - Mirrors either side across a selectable X/Y/Z grid plane with a live ghost preview.
 - Exports MagicaVoxel VOX 150 files and palette PNGs.
 - Exports large positioned VOX scenes, exact-color Qubicle Binary files, and scripted project conversions.
@@ -46,6 +48,21 @@ This runs unit tests, creates the static output in `dist/`, and enforces the bun
 
 Browser release checks run with `npm run test:e2e`. The complete deployment checklist is in [docs/release.md](docs/release.md).
 
+## AI Palette Studio
+
+Palette generation runs through a rate-limited Cloudflare Worker at `api.voxelmill.com`. Workers AI creates palette concepts; VoxelMill performs the source-color mapping locally by palette index so the result remains coherent instead of assigning random colors per voxel. Whole-model recolors use compact typed-array history patches, making one-step undo practical on large assets.
+
+AI requests contain the prompt, palette swatches, lock flags, and color usage counts. They also include a stable, randomly generated installation ID; Cloudflare processes the request's network IP as a separate rate-limit safeguard. Neither identifier is used to upload model data: GLBs, voxel geometry, and voxel coordinates remain in the browser.
+
+The production API configuration is in `workers/ai-api/wrangler.jsonc`:
+
+```bash
+npm run build:api   # type-check and dry-run bundle
+npm run deploy:api  # publish the API Worker
+```
+
+No provider key is needed for Workers AI. Text/image-to-3D generation has a provider-neutral job contract but remains disabled until a paid generation provider and private artifact storage are configured. See [the AI roadmap](docs/ai-roadmap.md).
+
 To inspect the structure and identity of private GLB regression assets without checking them into Git:
 
 ```bash
@@ -63,6 +80,8 @@ VOXEL_TEST_ASSET_DIR=/path/to/asset-root npm run check:assets
 ```bash
 npm run deploy
 ```
+
+Deploy both the AI Worker and Pages frontend with `npm run deploy:all`.
 
 Production is hosted at [voxelmill.com](https://voxelmill.com/), with [voxelmill.pages.dev](https://voxelmill.pages.dev/) retained as the Cloudflare Pages address. The deployment configuration lives in `wrangler.jsonc`; static security headers are defined in `public/_headers`.
 

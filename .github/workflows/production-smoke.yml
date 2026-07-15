@@ -23,3 +23,7 @@ jobs:
         run: |
           curl --fail --silent --show-error --max-time 20 https://voxelmill.com/manifest.webmanifest --output manifest.webmanifest
           node -e "const fs=require('fs'); const m=JSON.parse(fs.readFileSync('manifest.webmanifest')); if(m.name!=='VoxelMill') process.exit(1)"
+      - name: Check AI service without invoking a billed model
+        run: |
+          curl --fail --silent --show-error --max-time 20 https://api.voxelmill.com/health --output ai-health.json
+          node -e "const fs=require('fs'); const h=JSON.parse(fs.readFileSync('ai-health.json')); if(!h.ok||h.service!=='voxelmill-ai') process.exit(1)"

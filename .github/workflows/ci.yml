@@ -43,6 +43,12 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v5
+      - name: Deploy rate-limited AI API
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy --config workers/ai-api/wrangler.jsonc
       - uses: actions/download-artifact@v4
         with:
           name: production-dist

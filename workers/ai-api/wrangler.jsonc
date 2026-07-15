@@ -1,0 +1,36 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "voxelmill-ai",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-15",
+  "compatibility_flags": ["enable_request_signal"],
+  "workers_dev": false,
+  "routes": [
+    {
+      "pattern": "api.voxelmill.com",
+      "custom_domain": true
+    }
+  ],
+  "ai": {
+    "binding": "AI",
+    "remote": true
+  },
+  "ratelimits": [
+    {
+      "name": "CLIENT_RATE_LIMITER",
+      "namespace_id": "1401",
+      "simple": {
+        "limit": 8,
+        "period": 60
+      }
+    },
+    {
+      "name": "IP_RATE_LIMITER",
+      "namespace_id": "1402",
+      "simple": {
+        "limit": 40,
+        "period": 60
+      }
+    }
+  ]
+}

@@ -61,3 +61,44 @@ test('publishes installable local-first metadata', async ({ page, request }) => 
   expect((await manifest.json()).name).toBe('VoxelMill');
   expect(await page.locator('body').getAttribute('data-upload-endpoint')).toBeNull();
 });
+
+test('previews, applies, and undoes an AI palette without uploading geometry', async ({ page }) => {
+  let submitted: Record<string, unknown> | null = null;
+  const fulfillPaletteRequest = async (route: import('@playwright/test').Route) => {
+    submitted = JSON.parse(route.request().postData() ?? '{}') as Record<string, unknown>;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        version: 1,
+        requestId: 'e2e-request',
+        model: '@cf/e2e',
+        suggestions: [
+          { id: 'candidate-1', name: 'Arctic Alloy', description: 'Cold metal with a clean energy highlight.', colors: ['#07111f', '#244d70', '#73bddb', '#e5fbff'] },
+          { id: 'candidate-2', name: 'Martian Oxide', description: 'Dark rust with a restrained hot accent.', colors: ['#1a0c09', '#74301f', '#c46a3b', '#ffd2a1'] },
+          { id: 'candidate-3', name: 'Toxic Foundry', description: 'Industrial charcoal and acid green.', colors: ['#101310', '#354136', '#75a848', '#d9ff89'] },
+        ],
+      }),
+    });
+  };
+  await page.route('**/api/ai/palette', fulfillPaletteRequest);
+  await page.route('**/v1/palette', fulfillPaletteRequest);
+
+  await page.goto('/');
+  await openProject(page);
+  await page.getByRole('button', { name: 'Open AI Palette Studio' }).click();
+  await page.getByLabel('Describe the look').fill('cold arctic sci-fi metal');
+  await page.getByRole('button', { name: 'Generate 3 palettes' }).click();
+
+  await expect(page.getByText('Arctic Alloy', { exact: true })).toBeVisible();
+  await expect(page.getByText('voxels changed')).toBeVisible();
+  expect(submitted).toBeTruthy();
+  expect(submitted).not.toHaveProperty('voxels');
+  expect(submitted).not.toHaveProperty('sourceName');
+  expect(JSON.stringify(submitted)).not.toMatch(/"x"|"y"|"z"/u);
+
+  await page.getByRole('button', { name: 'Apply to model' }).click();
+  await expect(page.locator('.result-grid strong').last()).toHaveText('4 colors');
+  await page.getByTitle(/Undo/).click();
+  await expect(page.locator('.result-grid strong').last()).toHaveText('2 colors');
+});

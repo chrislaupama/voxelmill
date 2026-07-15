@@ -1,10 +1,18 @@
 import type { RGB } from '../types';
 
-interface Lab {
+export interface OklabColor {
   l: number;
   a: number;
   b: number;
 }
+
+export interface OklchColor {
+  l: number;
+  c: number;
+  h: number;
+}
+
+type Lab = OklabColor;
 
 interface WeightedColor extends RGB {
   count: number;
@@ -24,7 +32,7 @@ export const linearToSrgb = (value: number) => {
   return Math.round(encoded * 255);
 };
 
-function rgbToOklab(color: RGB): Lab {
+export function rgbToOklab(color: RGB): OklabColor {
   const r = srgbToLinear(color.r);
   const g = srgbToLinear(color.g);
   const b = srgbToLinear(color.b);
@@ -38,7 +46,7 @@ function rgbToOklab(color: RGB): Lab {
   };
 }
 
-function oklabToRgb(lab: Lab): RGB {
+export function oklabToRgb(lab: OklabColor): RGB {
   const lRoot = lab.l + 0.3963377774 * lab.a + 0.2158037573 * lab.b;
   const mRoot = lab.l - 0.1055613458 * lab.a - 0.0638541728 * lab.b;
   const sRoot = lab.l - 0.0894841775 * lab.a - 1.291485548 * lab.b;
@@ -50,6 +58,13 @@ function oklabToRgb(lab: Lab): RGB {
     g: linearToSrgb(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
     b: linearToSrgb(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s),
   };
+}
+
+export function rgbToOklch(color: RGB): OklchColor {
+  const lab = rgbToOklab(color);
+  const c = Math.hypot(lab.a, lab.b);
+  const degrees = Math.atan2(lab.b, lab.a) * 180 / Math.PI;
+  return { l: lab.l, c, h: (degrees + 360) % 360 };
 }
 
 const labDistance = (a: Lab, b: Lab) => {

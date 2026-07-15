@@ -12,15 +12,18 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:api": "tsc -p workers/ai-api/tsconfig.json && wrangler deploy --dry-run --config workers/ai-api/wrangler.jsonc --outdir .wrangler/ai-api",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "check": "npm test && npm run build && npm run check:bundle",
+    "check": "npm test && npm run build && npm run build:api && npm run check:bundle",
     "check:bundle": "node scripts/check-bundle.mjs",
     "check:assets": "node scripts/verify-assets.mjs",
     "inventory:glb": "node scripts/inventory-glb.mjs",
     "cli": "tsx src/cli.ts",
     "preview": "vite preview",
-    "deploy": "npm run build && wrangler pages deploy dist --project-name voxelmill --branch main"
+    "deploy": "npm run build && wrangler pages deploy dist --project-name voxelmill --branch main",
+    "deploy:api": "npm run build:api && wrangler deploy --config workers/ai-api/wrangler.jsonc",
+    "deploy:all": "npm run deploy:api && npm run deploy"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.4",
