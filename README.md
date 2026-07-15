@@ -44,6 +44,8 @@ npm run check
 
 This runs unit tests, creates the static output in `dist/`, and enforces the bundle budgets in `quality/budgets.json`. The full baseline and regression protocol are documented in `docs/quality-baseline.md`.
 
+Browser release checks run with `npm run test:e2e`. The complete deployment checklist is in [docs/release.md](docs/release.md).
+
 To inspect the structure and identity of private GLB regression assets without checking them into Git:
 
 ```bash

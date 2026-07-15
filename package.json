@@ -13,6 +13,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test": "vitest run",
+    "test:e2e": "playwright test",
     "check": "npm test && npm run build && npm run check:bundle",
     "check:bundle": "node scripts/check-bundle.mjs",
     "check:assets": "node scripts/verify-assets.mjs",
@@ -30,6 +31,7 @@
     "three": "^0.179.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@types/node": "^26.1.1",
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
