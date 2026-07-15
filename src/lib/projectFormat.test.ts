@@ -44,4 +44,19 @@ describe('.voxelmill project format', () => {
     expect(() => decodeVoxelMillProject(wrongVersion)).toThrow('version 99');
     expect(() => decodeVoxelMillProject(encoded.slice(0, -1))).toThrow('truncated or corrupt');
   });
+
+  it('rejects values that would truncate or collide in the binary representation', () => {
+    expect(() => encodeVoxelMillProject({
+      ...project,
+      model: { ...project.model, palette: [{ r: 256, g: 0, b: 0 }] },
+    })).toThrow('invalid RGB');
+    expect(() => encodeVoxelMillProject({
+      ...project,
+      model: { ...project.model, voxels: [{ ...project.model.voxels[0], x: 1.5 }] },
+    })).toThrow('invalid voxel');
+    expect(() => encodeVoxelMillProject({
+      ...project,
+      model: { ...project.model, voxels: [project.model.voxels[0], { ...project.model.voxels[0] }] },
+    })).toThrow('duplicate voxel');
+  });
 });

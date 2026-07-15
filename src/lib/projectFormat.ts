@@ -42,13 +42,17 @@ function validateManifest(value: unknown): ProjectManifest {
 
 export function encodeVoxelMillProject({ model, options }: VoxelMillProject): ArrayBuffer {
   if (!model.palette.length || model.palette.length > 255) throw new Error('Projects require between 1 and 255 palette colors.');
+  if (!model.palette.every((color) => [color.r, color.g, color.b].every((channel) => Number.isInteger(channel) && channel >= 0 && channel <= 255))) {
+    throw new Error('The project palette contains an invalid RGB value.');
+  }
   if (model.voxels.length > 0xffffffff) throw new Error('The project contains too many voxels.');
-  const manifestBytes = new TextEncoder().encode(JSON.stringify({
+  const manifest = validateManifest({
     sourceName: model.sourceName,
     voxelSize: model.voxelSize,
     size: model.size,
     options,
-  } satisfies ProjectManifest));
+  } satisfies ProjectManifest);
+  const manifestBytes = new TextEncoder().encode(JSON.stringify(manifest));
   const length = HEADER_BYTES + manifestBytes.length + model.palette.length * 3 + model.voxels.length * VOXEL_BYTES;
   const bytes = new Uint8Array(length);
   const view = new DataView(bytes.buffer);
@@ -65,12 +69,17 @@ export function encodeVoxelMillProject({ model, options }: VoxelMillProject): Ar
     bytes[cursor++] = color.g;
     bytes[cursor++] = color.b;
   }
+  const coordinates = new Set<string>();
   for (const voxel of model.voxels) {
-    if (voxel.x < 0 || voxel.y < 0 || voxel.z < 0
+    if (![voxel.x, voxel.y, voxel.z, voxel.colorIndex].every(Number.isInteger)
+      || voxel.x < 0 || voxel.y < 0 || voxel.z < 0
       || voxel.x >= model.size.x || voxel.y >= model.size.y || voxel.z >= model.size.z
       || voxel.colorIndex < 0 || voxel.colorIndex >= model.palette.length) {
       throw new Error('The project contains an invalid voxel coordinate or palette index.');
     }
+    const coordinate = `${voxel.x}:${voxel.y}:${voxel.z}`;
+    if (coordinates.has(coordinate)) throw new Error('The project contains duplicate voxel coordinates.');
+    coordinates.add(coordinate);
     view.setUint16(cursor, voxel.x, true);
     view.setUint16(cursor + 2, voxel.y, true);
     view.setUint16(cursor + 4, voxel.z, true);
@@ -107,6 +116,7 @@ export function decodeVoxelMillProject(buffer: ArrayBuffer): VoxelMillProject {
     b: bytes[cursor++],
   }));
   const voxels = [];
+  const coordinates = new Set<string>();
   for (let index = 0; index < voxelCount; index += 1) {
     const x = view.getUint16(cursor, true);
     const y = view.getUint16(cursor + 2, true);
@@ -116,6 +126,9 @@ export function decodeVoxelMillProject(buffer: ArrayBuffer): VoxelMillProject {
     if (x >= manifest.size.x || y >= manifest.size.y || z >= manifest.size.z || colorIndex >= palette.length) {
       throw new Error('The VoxelMill project contains invalid voxel data.');
     }
+    const coordinate = `${x}:${y}:${z}`;
+    if (coordinates.has(coordinate)) throw new Error('The VoxelMill project contains duplicate voxel coordinates.');
+    coordinates.add(coordinate);
     voxels.push({ x, y, z, colorIndex, ...palette[colorIndex] });
   }
   return {
@@ -135,7 +148,11 @@ export function downloadVoxelMillProject(project: VoxelMillProject) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
-  anchor.download = `${project.model.sourceName.replace(/\.[^.]+$/u, '')}.voxelmill`;
+  const baseName = project.model.sourceName.replace(/\.[^.]+$/u, '').replace(/[^a-z0-9_-]+/giu, '-');
+  anchor.download = `${baseName || 'model'}.voxelmill`;
+  anchor.hidden = true;
+  document.body.append(anchor);
   anchor.click();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
