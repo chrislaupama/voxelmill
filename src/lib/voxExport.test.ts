@@ -26,4 +26,21 @@ describe('encodeVox', () => {
     expect(bytes.at(62)).toBe(2); // source Y -> VOX Z
     expect(bytes.at(63)).toBe(1); // palette index, one-based
   });
+
+  it('partitions coordinates above 255 into positioned scene models', () => {
+    const model: VoxelModel = {
+      sourceName: 'large.glb', voxelSize: 1, size: { x: 301, y: 1, z: 1 },
+      palette: [{ r: 200, g: 100, b: 50 }],
+      voxels: [
+        { x: 0, y: 0, z: 0, r: 200, g: 100, b: 50, colorIndex: 0 },
+        { x: 300, y: 0, z: 0, r: 200, g: 100, b: 50, colorIndex: 0 },
+      ],
+    };
+    const text = new TextDecoder().decode(encodeVox(model));
+    expect(text).toContain('PACK');
+    expect(text.match(/SIZE/g)).toHaveLength(2);
+    expect(text).toContain('nTRN');
+    expect(text).toContain('_t');
+    expect(text).toContain('256 0 0');
+  });
 });

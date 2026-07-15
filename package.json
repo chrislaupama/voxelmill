@@ -17,6 +17,7 @@
     "check:bundle": "node scripts/check-bundle.mjs",
     "check:assets": "node scripts/verify-assets.mjs",
     "inventory:glb": "node scripts/inventory-glb.mjs",
+    "cli": "tsx src/cli.ts",
     "preview": "vite preview",
     "deploy": "npm run build && wrangler pages deploy dist --project-name voxelmill --branch main"
   },
@@ -29,10 +30,12 @@
     "three": "^0.179.1"
   },
   "devDependencies": {
+    "@types/node": "^26.1.1",
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
     "@types/three": "^0.179.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "tsx": "^4.23.1",
     "typescript": "~5.7.2",
     "vite": "^6.0.5",
     "vitest": "^4.1.10",

@@ -27,6 +27,8 @@ interface Props {
   tool: EditorTool;
   mirrorSettings: MirrorSettings;
   mirrorPreview: Voxel[];
+  selectedVoxels: Voxel[];
+  slice: { enabled: boolean; axis: MirrorSettings['axis']; index: number };
   onVoxelAction: (voxel: Voxel, normal: VoxelCoordinate) => void;
 }
 
@@ -108,23 +110,25 @@ function VoxelInstances({
 interface GhostVoxelsProps {
   voxels: Voxel[];
   size: VoxelModel['size'];
+  color?: string;
+  opacity?: number;
 }
 
-function GhostVoxels({ voxels, size }: GhostVoxelsProps) {
+function GhostVoxels({ voxels, size, color = '#b5f43b', opacity = 0.26 }: GhostVoxelsProps) {
   const mesh = useRef<InstancedMesh>(null);
   const helper = useMemo(() => new Object3D(), []);
   const geometry = useMemo(() => new BoxGeometry(1.04, 1.04, 1.04), []);
   const material = useMemo(
     () => new MeshStandardMaterial({
-      color: '#b5f43b',
-      emissive: '#5c8b13',
+      color,
+      emissive: color,
       emissiveIntensity: 0.3,
       transparent: true,
-      opacity: 0.26,
+      opacity,
       depthWrite: false,
       roughness: 0.65,
     }),
-    [],
+    [color, opacity],
   );
   useLayoutEffect(() => {
     if (!mesh.current) return;
@@ -161,14 +165,24 @@ interface VoxelMeshProps {
   tool: EditorTool;
   mirrorSettings: MirrorSettings;
   mirrorPreview: Voxel[];
+  selectedVoxels: Voxel[];
+  slice: Props['slice'];
   onVoxelAction: Props['onVoxelAction'];
 }
 
-function VoxelMesh({ model, tool, mirrorSettings, mirrorPreview, onVoxelAction }: VoxelMeshProps) {
+function VoxelMesh({ model, tool, mirrorSettings, mirrorPreview, selectedVoxels, slice, onVoxelAction }: VoxelMeshProps) {
   const [hovered, setHovered] = useState<VoxelCoordinate | null>(null);
   const geometry = useMemo(() => new BoxGeometry(0.94, 0.94, 0.94), []);
   const scale = 3.6 / Math.max(model.size.x, model.size.y, model.size.z);
-  const interactive = tool === 'add' || tool === 'remove' || tool === 'paint';
+  const interactive = tool !== 'orbit' && tool !== 'mirror';
+  const visibleVoxels = useMemo(
+    () => slice.enabled ? model.voxels.filter((voxel) => voxel[slice.axis] === slice.index) : model.voxels,
+    [model.voxels, slice.axis, slice.enabled, slice.index],
+  );
+  const visibleSelection = useMemo(
+    () => slice.enabled ? selectedVoxels.filter((voxel) => voxel[slice.axis] === slice.index) : selectedVoxels,
+    [selectedVoxels, slice.axis, slice.enabled, slice.index],
+  );
 
   const updateHover = (voxel: Voxel, normal: VoxelCoordinate) => {
     setHovered(tool === 'add'
@@ -176,12 +190,12 @@ function VoxelMesh({ model, tool, mirrorSettings, mirrorPreview, onVoxelAction }
       : { x: voxel.x, y: voxel.y, z: voxel.z });
   };
 
-  const hoverColor = tool === 'remove' ? '#ff625f' : tool === 'paint' ? '#6dc8ff' : '#b5f43b';
+  const hoverColor = tool === 'remove' ? '#ff625f' : tool === 'paint' || tool === 'fill' ? '#6dc8ff' : '#b5f43b';
 
   return (
     <group scale={scale}>
       <VoxelInstances
-        voxels={model.voxels}
+        voxels={visibleVoxels}
         size={model.size}
         geometry={geometry}
         interactive={interactive}
@@ -208,6 +222,7 @@ function VoxelMesh({ model, tool, mirrorSettings, mirrorPreview, onVoxelAction }
           <GhostVoxels voxels={mirrorPreview} size={model.size} />
         </>
       ) : null}
+      {visibleSelection.length ? <GhostVoxels voxels={visibleSelection} size={model.size} color="#75c9ff" opacity={0.38} /> : null}
     </group>
   );
 }
@@ -225,6 +240,8 @@ export function ModelViewport({
   tool,
   mirrorSettings,
   mirrorPreview,
+  selectedVoxels,
+  slice,
   onVoxelAction,
 }: Props) {
   return (
@@ -249,6 +266,8 @@ export function ModelViewport({
             tool={tool}
             mirrorSettings={mirrorSettings}
             mirrorPreview={mirrorPreview}
+            selectedVoxels={selectedVoxels}
+            slice={slice}
             onVoxelAction={onVoxelAction}
           />
         ) : null}

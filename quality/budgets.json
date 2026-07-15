@@ -1,8 +1,8 @@
 {
-  "initialJavaScriptBytes": 1200000,
-  "initialJavaScriptGzipBytes": 340000,
+  "initialJavaScriptBytes": 300000,
+  "initialJavaScriptGzipBytes": 90000,
   "totalJavaScriptBytes": 1500000,
   "totalJavaScriptGzipBytes": 410000,
-  "stylesheetBytes": 18000,
+  "stylesheetBytes": 20000,
   "documentBytes": 2000
 }

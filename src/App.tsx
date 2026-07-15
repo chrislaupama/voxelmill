@@ -14,24 +14,38 @@ import {
   Layers3,
   LoaderCircle,
   MousePointer2,
+  Pipette,
   PaintBucket,
   Palette,
   Plus,
   Redo2,
   RefreshCw,
+  RotateCw,
   Save,
+  Scan,
   SlidersHorizontal,
   Sparkles,
   Undo2,
   Upload,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ModelViewport } from './components/ModelViewport';
-import { addVoxel, buildMirrorPreview, mirrorModel, paintVoxel, removeVoxel } from './lib/editVoxels';
-import { loadGlb } from './lib/modelLoader';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  addVoxels,
+  brushCoordinates,
+  buildMirrorPreview,
+  floodFillVoxels,
+  mirrorModel,
+  paintVoxels,
+  removeVoxels,
+  rotateVoxels,
+  translateVoxels,
+} from './lib/editVoxels';
 import { decodeVoxelMillProject, downloadVoxelMillProject } from './lib/projectFormat';
 import { loadAutosave, saveAutosave, type RecoveredProject } from './lib/projectStore';
+import { compactPalette, replacePaletteColor, sortPalette } from './lib/paletteEditing';
+import { downloadQb } from './lib/qbExport';
 import { applyVoxelPatch, createVoxelPatch, type VoxelPatch } from './lib/voxelHistory';
+import { packVoxelCoordinate } from './lib/voxelIndex';
 import { isConversionCancelled, voxelizeGlbInWorker } from './lib/voxelizeWorker';
 import { downloadVox } from './lib/voxExport';
 import type {
@@ -49,6 +63,8 @@ import type {
   VoxelModel,
   VoxelizeOptions,
 } from './types';
+
+const ModelViewport = lazy(() => import('./components/ModelViewport').then((module) => ({ default: module.ModelViewport })));
 
 const DEFAULT_OPTIONS: VoxelizeOptions = {
   resolution: 64,
@@ -75,10 +91,23 @@ const hexToRgb = (value: string): RGB => ({
 
 const TOOL_LABELS: Record<EditorTool, string> = {
   orbit: 'Orbit',
+  select: 'Select',
   add: 'Add voxel',
   remove: 'Erase voxel',
   paint: 'Paint voxel',
+  fill: 'Flood fill',
+  eyedropper: 'Pick color',
   mirror: 'Mirror',
+};
+
+const TOOL_INSTRUCTIONS: Record<Exclude<EditorTool, 'mirror'>, string> = {
+  orbit: 'Choose an editing tool, then click directly on the model.',
+  select: 'Click voxels to add or remove them from the current selection.',
+  add: 'Click a voxel face to place voxels beside it.',
+  remove: 'Click a voxel to erase it with the current brush.',
+  paint: 'Click a voxel to recolor it with the current brush.',
+  fill: 'Click a voxel to recolor its connected color region.',
+  eyedropper: 'Click a voxel to make its color the active paint color.',
 };
 
 function downloadPalette(model: VoxelModel) {
@@ -120,8 +149,13 @@ function App() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [tool, setTool] = useState<EditorTool>('orbit');
   const [selectedColor, setSelectedColor] = useState<RGB>({ r: 181, g: 244, b: 59 });
+  const [selectedPaletteIndex, setSelectedPaletteIndex] = useState<number | null>(null);
   const [customColor, setCustomColor] = useState('#b5f43b');
   const [customColorDraft, setCustomColorDraft] = useState('#b5f43b');
+  const [brushRadius, setBrushRadius] = useState(0);
+  const [brushShape, setBrushShape] = useState<'sphere' | 'cube'>('sphere');
+  const [selection, setSelection] = useState<Set<number>>(() => new Set());
+  const [slice, setSlice] = useState<{ enabled: boolean; axis: MirrorAxis; index: number }>({ enabled: false, axis: 'z', index: 0 });
   const [mirrorSettings, setMirrorSettings] = useState<MirrorSettings>({
     axis: 'x',
     direction: 'negativeToPositive',
@@ -133,13 +167,19 @@ function App() {
     () => voxelModel && tool === 'mirror' ? buildMirrorPreview(voxelModel, mirrorSettings) : [],
     [mirrorSettings, tool, voxelModel],
   );
+  const selectedVoxels = useMemo(
+    () => voxelModel ? voxelModel.voxels.filter((voxel) => selection.has(packVoxelCoordinate(voxel))) : [],
+    [selection, voxelModel],
+  );
 
   const adoptVoxelModel = useCallback((result: VoxelModel) => {
     setVoxelModel(result);
     setHistory({ past: [], future: [] });
+    setSelection(new Set());
     setTool('orbit');
     if (result.palette[0]) {
       setSelectedColor(result.palette[0]);
+      setSelectedPaletteIndex(0);
       setCustomColor(rgbToHex(result.palette[0]));
       setCustomColorDraft(rgbToHex(result.palette[0]));
     }
@@ -148,6 +188,7 @@ function App() {
       direction: 'negativeToPositive',
       plane: Math.max(1, Math.floor(result.size.x / 2)),
     });
+    setSlice({ enabled: false, axis: 'z', index: Math.max(0, Math.floor(result.size.z / 2)) });
     setPreviewMode('voxel');
   }, []);
 
@@ -192,6 +233,7 @@ function App() {
       setError(null);
       setVoxelModel(null);
       setHistory({ past: [], future: [] });
+      setSelection(new Set());
       setTool('orbit');
       setProgress({ progress: 0.02, label: lowerName.endsWith('.voxelmill') ? 'Opening VoxelMill project' : 'Opening GLB model' });
       try {
@@ -205,6 +247,7 @@ function App() {
           setBusy(false);
           return;
         }
+        const { loadGlb } = await import('./lib/modelLoader');
         const loaded = await loadGlb(file);
         sourceFileRef.current = file;
         setSource(loaded);
@@ -283,6 +326,7 @@ function App() {
     const patch = history.past[history.past.length - 1];
     setHistory({ past: history.past.slice(0, -1), future: [patch, ...history.future].slice(0, 100) });
     setVoxelModel(applyVoxelPatch(voxelModel, patch, 'undo'));
+    setSelection(new Set());
   }, [history, voxelModel]);
 
   const redo = useCallback(() => {
@@ -290,6 +334,7 @@ function App() {
     const patch = history.future[0];
     setHistory({ past: [...history.past, patch].slice(-100), future: history.future.slice(1) });
     setVoxelModel(applyVoxelPatch(voxelModel, patch, 'redo'));
+    setSelection(new Set());
   }, [history, voxelModel]);
 
   useEffect(() => {
@@ -315,24 +360,52 @@ function App() {
 
   const handleVoxelAction = (voxel: Voxel, normal: VoxelCoordinate) => {
     if (!voxelModel) return;
+    if (tool === 'select') {
+      const key = packVoxelCoordinate(voxel);
+      setSelection((current) => {
+        const next = new Set(current);
+        if (next.has(key)) next.delete(key); else next.add(key);
+        return next;
+      });
+      return;
+    }
+    if (tool === 'eyedropper') {
+      selectPaletteColor({ r: voxel.r, g: voxel.g, b: voxel.b }, voxel.colorIndex);
+      return;
+    }
+    if (tool === 'fill') {
+      commitEdit(floodFillVoxels(voxelModel, voxel, selectedColor));
+      return;
+    }
     if (tool === 'add') {
-      commitEdit(addVoxel(voxelModel, {
+      const target = {
         x: voxel.x + normal.x,
         y: voxel.y + normal.y,
         z: voxel.z + normal.z,
-      }, selectedColor));
+      };
+      commitEdit(addVoxels(voxelModel, brushCoordinates(target, brushRadius, undefined, brushShape), selectedColor));
     } else if (tool === 'remove') {
-      commitEdit(removeVoxel(voxelModel, voxel));
+      commitEdit(removeVoxels(voxelModel, brushCoordinates(voxel, brushRadius, voxelModel.size, brushShape)));
     } else if (tool === 'paint') {
-      commitEdit(paintVoxel(voxelModel, voxel, selectedColor));
+      commitEdit(paintVoxels(voxelModel, brushCoordinates(voxel, brushRadius, voxelModel.size, brushShape), selectedColor));
     }
   };
 
-  const selectPaletteColor = (color: RGB) => {
+  const selectPaletteColor = (color: RGB, index: number | null = null) => {
     setSelectedColor(color);
+    setSelectedPaletteIndex(index);
     setCustomColor(rgbToHex(color));
     setCustomColorDraft(rgbToHex(color));
-    if (tool === 'orbit' || tool === 'mirror') activateTool('paint');
+    if (tool === 'orbit' || tool === 'mirror' || tool === 'eyedropper') activateTool('paint');
+  };
+
+  const transformSelection = (operation: 'rotate' | VoxelCoordinate, axis: MirrorAxis = 'z') => {
+    if (!voxelModel || !selectedVoxels.length) return;
+    const result = operation === 'rotate'
+      ? rotateVoxels(voxelModel, selectedVoxels, axis)
+      : translateVoxels(voxelModel, selectedVoxels, operation);
+    commitEdit(result.model);
+    setSelection(new Set(result.coordinates.map(packVoxelCoordinate)));
   };
 
   const setMirrorAxis = (axis: MirrorAxis) => {
@@ -417,6 +490,9 @@ function App() {
                     <button className={tool === 'orbit' ? 'active' : ''} type="button" onClick={() => activateTool('orbit')} title="Orbit">
                       <MousePointer2 size={16} /><span>Orbit</span>
                     </button>
+                    <button className={tool === 'select' ? 'active blue' : ''} type="button" onClick={() => activateTool('select')} title="Select voxels">
+                      <Scan size={16} /><span>Select</span>
+                    </button>
                     <button className={tool === 'add' ? 'active' : ''} type="button" onClick={() => activateTool('add')} title="Add voxel">
                       <Plus size={16} /><span>Add</span>
                     </button>
@@ -425,6 +501,12 @@ function App() {
                     </button>
                     <button className={tool === 'paint' ? 'active blue' : ''} type="button" onClick={() => activateTool('paint')} title="Paint voxel">
                       <PaintBucket size={16} /><span>Paint</span>
+                    </button>
+                    <button className={tool === 'fill' ? 'active blue' : ''} type="button" onClick={() => activateTool('fill')} title="Flood fill connected color">
+                      <PaintBucket size={16} /><span>Fill</span>
+                    </button>
+                    <button className={tool === 'eyedropper' ? 'active blue' : ''} type="button" onClick={() => activateTool('eyedropper')} title="Pick voxel color">
+                      <Pipette size={16} /><span>Pick</span>
                     </button>
                     <button className={tool === 'mirror' ? 'active' : ''} type="button" onClick={() => activateTool('mirror')} title="Mirror model">
                       <FlipHorizontal2 size={16} /><span>Mirror</span>
@@ -436,19 +518,23 @@ function App() {
                   </div>
                 </div>
               ) : null}
-              <ModelViewport
-                source={source}
-                model={voxelModel}
-                mode={previewMode}
-                showGrid={showGrid}
-                tool={tool}
-                mirrorSettings={mirrorSettings}
-                mirrorPreview={mirrorPreview}
-                onVoxelAction={handleVoxelAction}
-              />
+              <Suspense fallback={<div className="viewport-loading"><LoaderCircle className="spin" size={20} /> Loading 3D editor</div>}>
+                <ModelViewport
+                  source={source}
+                  model={voxelModel}
+                  mode={previewMode}
+                  showGrid={showGrid}
+                  tool={tool}
+                  mirrorSettings={mirrorSettings}
+                  mirrorPreview={mirrorPreview}
+                  selectedVoxels={selectedVoxels}
+                  slice={slice}
+                  onVoxelAction={handleVoxelAction}
+                />
+              </Suspense>
               <div className="view-hint">
                 {previewMode === 'voxel' && tool !== 'orbit'
-                  ? tool === 'mirror' ? 'GHOST VOXELS SHOW THE MIRRORED RESULT · DRAG TO ORBIT' : `CLICK A VOXEL FACE TO ${TOOL_LABELS[tool].toUpperCase()} · DRAG TO ORBIT`
+                  ? tool === 'mirror' ? 'GHOST VOXELS SHOW THE MIRRORED RESULT · DRAG TO ORBIT' : `CLICK A VOXEL TO ${TOOL_LABELS[tool].toUpperCase()} · DRAG TO ORBIT`
                   : 'DRAG TO ORBIT · SCROLL TO ZOOM · RIGHT-DRAG TO PAN'}
               </div>
               {busy ? (
@@ -664,33 +750,62 @@ function App() {
                 {tool !== 'mirror' ? (
                   <>
                     <div className="editor-instruction">
-                      {tool === 'orbit' ? 'Choose Add, Erase, or Paint, then click directly on the model.' :
-                        tool === 'add' ? 'Click a voxel face to place a new voxel beside it.' :
-                          tool === 'remove' ? 'Click a voxel to remove it from the model.' :
-                            'Click a voxel to replace its color.'}
+                      {TOOL_INSTRUCTIONS[tool]}
                     </div>
-                    <div className="control-label editor-color-label">
-                      <span>Paint color</span>
-                      <output>{rgbToHex(selectedColor).toUpperCase()}</output>
-                    </div>
-                    <div className="palette-grid" aria-label="Voxel paint palette">
-                      {voxelModel.palette.map((color, index) => {
-                        const hex = rgbToHex(color);
-                        const selected = color.r === selectedColor.r && color.g === selectedColor.g && color.b === selectedColor.b;
-                        return (
-                          <button
-                            key={`${hex}-${index}`}
-                            className={selected ? 'selected' : ''}
-                            type="button"
-                            aria-label={`Use palette color ${index + 1}: ${hex}`}
-                            title={`${index + 1} · ${hex.toUpperCase()}`}
-                            style={{ backgroundColor: hex }}
-                            onClick={() => selectPaletteColor(color)}
-                          />
-                        );
-                      })}
-                    </div>
-                    <div className="custom-color-row">
+                    {tool === 'select' ? (
+                      <div className="editor-subsection">
+                        <div className="control-label"><span>Selection</span><output>{selectedVoxels.length.toLocaleString()}</output></div>
+                        <div className="compact-actions">
+                          <button type="button" onClick={() => setSelection(new Set(voxelModel.voxels.map(packVoxelCoordinate)))}>Select all</button>
+                          <button type="button" onClick={() => setSelection(new Set())} disabled={!selectedVoxels.length}>Clear</button>
+                        </div>
+                        <div className="control-label"><span>Move selection</span></div>
+                        <div className="transform-grid">
+                          {(['x', 'y', 'z'] as MirrorAxis[]).flatMap((axis) => [-1, 1].map((amount) => (
+                            <button type="button" key={`${axis}-${amount}`} disabled={!selectedVoxels.length} onClick={() => transformSelection({ x: axis === 'x' ? amount : 0, y: axis === 'y' ? amount : 0, z: axis === 'z' ? amount : 0 })}>
+                              {amount < 0 ? '−' : '+'}{axis.toUpperCase()}
+                            </button>
+                          )))}
+                        </div>
+                        <div className="control-label"><span>Rotate 90°</span></div>
+                        <div className="axis-selector">
+                          {(['x', 'y', 'z'] as MirrorAxis[]).map((axis) => <button type="button" key={axis} disabled={!selectedVoxels.length} onClick={() => transformSelection('rotate', axis)}><RotateCw size={12} /> {axis.toUpperCase()}</button>)}
+                        </div>
+                      </div>
+                    ) : null}
+                    {tool === 'add' || tool === 'remove' || tool === 'paint' ? (
+                      <div className="editor-subsection">
+                        <label className="control-label" htmlFor="brush-radius"><span>Brush radius</span><output>{brushRadius}</output></label>
+                        <input id="brush-radius" className="range" type="range" min="0" max="4" step="1" value={brushRadius} onChange={(event) => setBrushRadius(Number(event.target.value))} />
+                        <div className="axis-selector">
+                          <button className={brushShape === 'sphere' ? 'active' : ''} type="button" onClick={() => setBrushShape('sphere')}>Sphere</button>
+                          <button className={brushShape === 'cube' ? 'active' : ''} type="button" onClick={() => setBrushShape('cube')}>Cube</button>
+                        </div>
+                      </div>
+                    ) : null}
+                    {tool === 'add' || tool === 'paint' || tool === 'fill' || tool === 'eyedropper' ? (
+                      <><div className="control-label editor-color-label">
+                        <span>{tool === 'eyedropper' ? 'Picked color' : 'Paint color'}</span>
+                        <output>{rgbToHex(selectedColor).toUpperCase()}</output>
+                      </div>
+                      <div className="palette-grid" aria-label="Voxel paint palette">
+                        {voxelModel.palette.map((color, index) => {
+                          const hex = rgbToHex(color);
+                          const selected = color.r === selectedColor.r && color.g === selectedColor.g && color.b === selectedColor.b;
+                          return (
+                            <button
+                              key={`${hex}-${index}`}
+                              className={selected ? 'selected' : ''}
+                              type="button"
+                              aria-label={`Use palette color ${index + 1}: ${hex}`}
+                              title={`${index + 1} · ${hex.toUpperCase()}`}
+                              style={{ backgroundColor: hex }}
+                              onClick={() => selectPaletteColor(color, index)}
+                            />
+                          );
+                        })}
+                      </div>
+                      <div className="custom-color-row">
                       <label className="custom-color-chip" style={{ backgroundColor: customColor }}>
                         <input
                           type="color"
@@ -700,7 +815,6 @@ function App() {
                             setCustomColor(event.target.value);
                             setCustomColorDraft(event.target.value);
                             setSelectedColor(hexToRgb(event.target.value));
-                            if (tool === 'orbit') activateTool('paint');
                           }}
                         />
                       </label>
@@ -719,10 +833,30 @@ function App() {
                             const normalized = value.toLowerCase();
                             setCustomColor(normalized);
                             setSelectedColor(hexToRgb(normalized));
-                            if (tool === 'orbit') activateTool('paint');
                           }
                         }}
                       />
+                      </div>
+                      <div className="compact-actions palette-actions">
+                        <button type="button" disabled={selectedPaletteIndex === null} onClick={() => {
+                          if (selectedPaletteIndex === null) return;
+                          commitEdit(replacePaletteColor(voxelModel, selectedPaletteIndex, selectedColor));
+                        }}>Replace globally</button>
+                        <button type="button" onClick={() => { commitEdit(compactPalette(voxelModel)); setSelectedPaletteIndex(null); }}>Remove unused</button>
+                        <button type="button" onClick={() => { commitEdit(sortPalette(voxelModel, 'hue')); setSelectedPaletteIndex(null); }}>Sort by hue</button>
+                        <button type="button" onClick={() => { commitEdit(sortPalette(voxelModel, 'luminance')); setSelectedPaletteIndex(null); }}>Sort by light</button>
+                      </div></>
+                    ) : null}
+
+                    <div className="editor-subsection slice-controls">
+                      <label className="slice-toggle"><input type="checkbox" checked={slice.enabled} onChange={(event) => setSlice((current) => ({ ...current, enabled: event.target.checked }))} /><span>Slice view</span></label>
+                      {slice.enabled ? <>
+                        <div className="axis-selector">
+                          {(['x', 'y', 'z'] as MirrorAxis[]).map((axis) => <button className={slice.axis === axis ? 'active' : ''} type="button" key={axis} onClick={() => setSlice({ enabled: true, axis, index: Math.min(slice.index, voxelModel.size[axis] - 1) })}>{axis.toUpperCase()}</button>)}
+                        </div>
+                        <label className="control-label" htmlFor="slice-index"><span>Layer</span><output>{slice.index + 1} / {voxelModel.size[slice.axis]}</output></label>
+                        <input id="slice-index" className="range" type="range" min="0" max={Math.max(0, voxelModel.size[slice.axis] - 1)} step="1" value={Math.min(slice.index, voxelModel.size[slice.axis] - 1)} onChange={(event) => setSlice((current) => ({ ...current, index: Number(event.target.value) }))} />
+                      </> : null}
                     </div>
                   </>
                 ) : (
@@ -830,6 +964,9 @@ function App() {
             <div className="export-row">
               <button type="button" disabled={!voxelModel || busy} onClick={() => voxelModel && downloadVox(voxelModel)}>
                 <Download size={16} /> .VOX
+              </button>
+              <button type="button" disabled={!voxelModel || busy} onClick={() => voxelModel && downloadQb(voxelModel)} title="Export full-color Qubicle Binary">
+                <Download size={16} /> .QB
               </button>
               <button type="button" disabled={!voxelModel || busy} onClick={() => voxelModel && downloadVoxelMillProject({ model: voxelModel, options })}>
                 <Save size={16} /> Project

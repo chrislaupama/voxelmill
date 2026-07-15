@@ -3,7 +3,7 @@ import type { Group } from 'three';
 export type FillMode = 'surface' | 'solid';
 export type SamplingQuality = 'draft' | 'balanced' | 'high';
 export type MaterialColorMode = 'baseColor' | 'appearance';
-export type EditorTool = 'orbit' | 'add' | 'remove' | 'paint' | 'mirror';
+export type EditorTool = 'orbit' | 'select' | 'add' | 'remove' | 'paint' | 'fill' | 'eyedropper' | 'mirror';
 export type MirrorAxis = 'x' | 'y' | 'z';
 export type MirrorDirection = 'negativeToPositive' | 'positiveToNegative';
 

@@ -13,18 +13,18 @@ Run all existing unit tests, the production build, and bundle budgets with:
 npm run check
 ```
 
-At capture time there are 14 passing unit tests across five files. The production output is bounded by `quality/budgets.json`:
+The production output is bounded by `quality/budgets.json`; budget changes must accompany a user-facing capability or a measured optimization:
 
 | Resource | Baseline | Maximum |
 | --- | ---: | ---: |
-| Initial JavaScript | 1,175,034 B | 1,200,000 B |
-| Initial JavaScript (gzip) | 327,579 B | 340,000 B |
+| Initial JavaScript | 1,175,034 B | 300,000 B |
+| Initial JavaScript (gzip) | 327,579 B | 90,000 B |
 | Total JavaScript | 1,175,034 B | 1,500,000 B |
 | Total JavaScript (gzip) | 327,579 B | 410,000 B |
-| Stylesheet | 17,387 B | 18,000 B |
+| Stylesheet | 17,387 B | 20,000 B |
 | HTML document | 964 B | 2,000 B |
 
-Budgets are ceilings, not targets. Later milestones should reduce the initial JavaScript substantially through route or feature splitting.
+Budgets are ceilings, not targets. The 3D renderer and GLB loader are loaded on demand, reducing initial JavaScript to roughly 249 KB raw / 77 KB gzip while keeping total JavaScript separately bounded.
 
 ## Representative real assets
 
@@ -56,11 +56,8 @@ The next harness milestone must add synthetic textured GLBs with known expected 
 
 ## Known baseline constraints
 
-- Conversion and palette reduction execute on the main browser thread. Cooperative yielding exists during triangle traversal, but solid filling and palette work can still freeze the interface and there is no cancellation boundary.
-- Editing history retains up to 40 complete voxel-model snapshots. Memory therefore scales with `voxel count × history depth` rather than the number of changed voxels.
 - VOX dimensions are clamped to 255 cells per axis. There is no automatic scene chunking for larger exports.
 - Resolution is limited to 24–128 and palette size to 8–255 in the current interface.
-- The initial JavaScript is approximately 1.18 MB raw because the converter, editor, renderer, and exporters ship in one entry chunk.
 - The supplied Atlas weapon and pickup assets contain material colors but no embedded textures. The rocket is the principal high-poly texture regression input.
 
 ## Performance protocol

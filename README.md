@@ -19,6 +19,7 @@ VoxelMill is a local-first browser application for converting textured GLB model
 - Supports palette swatches, exact custom hex colors, and undo/redo history.
 - Mirrors either side across a selectable X/Y/Z grid plane with a live ghost preview.
 - Exports MagicaVoxel VOX 150 files and palette PNGs.
+- Exports large positioned VOX scenes, exact-color Qubicle Binary files, and scripted project conversions.
 - Saves compact, versioned `.voxelmill` project files that preserve conversion settings and editable voxel data.
 - Autosaves project bytes to IndexedDB for local crash/reload recovery; model data is never uploaded.
 
@@ -66,3 +67,5 @@ Production is hosted at [voxelmill.com](https://voxelmill.com/), with [voxelmill
 ## Notes
 
 The converter is intended for static or posed GLB assets. It bakes the current pose of skinned meshes. Very high resolutions and large triangle counts require more processing time because every triangle is tested against candidate voxel cells. The VOX exporter swaps the Three.js Y-up axis to MagicaVoxel's Z-up axis.
+
+Saved projects can be exported without reopening the browser; see [the command-line guide](docs/cli.md).
