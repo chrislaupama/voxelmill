@@ -15,6 +15,7 @@
     "test": "vitest run",
     "check": "npm test && npm run build && npm run check:bundle",
     "check:bundle": "node scripts/check-bundle.mjs",
+    "check:assets": "node scripts/verify-assets.mjs",
     "inventory:glb": "node scripts/inventory-glb.mjs",
     "preview": "vite preview",
     "deploy": "npm run build && wrangler pages deploy dist --project-name voxelmill --branch main"

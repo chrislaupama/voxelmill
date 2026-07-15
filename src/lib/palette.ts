@@ -11,11 +11,6 @@ interface WeightedColor extends RGB {
   lab: Lab;
 }
 
-interface ColorBox {
-  colors: WeightedColor[];
-  weight: number;
-}
-
 const paletteLabCache = new WeakMap<RGB[], Lab[]>();
 
 export const srgbToLinear = (value: number) => {
@@ -57,16 +52,6 @@ function oklabToRgb(lab: Lab): RGB {
   };
 }
 
-const labRange = (colors: WeightedColor[], channel: keyof Lab) => {
-  let min = Number.POSITIVE_INFINITY;
-  let max = Number.NEGATIVE_INFINITY;
-  for (const color of colors) {
-    min = Math.min(min, color.lab[channel]);
-    max = Math.max(max, color.lab[channel]);
-  }
-  return max - min;
-};
-
 const labDistance = (a: Lab, b: Lab) => {
   const dl = (a.l - b.l) * 1.15;
   const da = a.a - b.a;
@@ -77,64 +62,34 @@ const labDistance = (a: Lab, b: Lab) => {
 export const perceptualColorDistance = (a: RGB, b: RGB) =>
   Math.sqrt(labDistance(rgbToOklab(a), rgbToOklab(b))) * 100;
 
-function averageLab(colors: WeightedColor[], weight: number): Lab {
-  let l = 0;
-  let a = 0;
-  let b = 0;
-  for (const color of colors) {
-    l += color.lab.l * color.count;
-    a += color.lab.a * color.count;
-    b += color.lab.b * color.count;
-  }
-  return { l: l / weight, a: a / weight, b: b / weight };
-}
-
 function initialCentroids(entries: WeightedColor[], targetSize: number): Lab[] {
-  const boxes: ColorBox[] = [{ colors: entries, weight: entries.reduce((sum, color) => sum + color.count, 0) }];
-  while (boxes.length < targetSize) {
-    let splitIndex = -1;
+  if (!entries.length || targetSize <= 0) return [];
+  let firstIndex = 0;
+  for (let index = 1; index < entries.length; index += 1) {
+    if (entries[index].count > entries[firstIndex].count) firstIndex = index;
+  }
+  const centroids = [entries[firstIndex].lab];
+  const nearestDistances = entries.map((entry) => labDistance(entry.lab, centroids[0]));
+
+  // Seed with frequent colors that are far from every existing swatch. Median-cut
+  // seeds could straddle two strong texture regions, producing muddy palettes even
+  // when the requested palette had room for both original colors.
+  while (centroids.length < targetSize && centroids.length < entries.length) {
+    let bestIndex = -1;
     let bestScore = -1;
-    for (let i = 0; i < boxes.length; i += 1) {
-      const box = boxes[i];
-      if (box.colors.length < 2) continue;
-      const range = Math.max(
-        labRange(box.colors, 'l') * 1.15,
-        labRange(box.colors, 'a'),
-        labRange(box.colors, 'b'),
-      );
-      const score = range * Math.sqrt(box.weight);
+    for (let index = 0; index < entries.length; index += 1) {
+      const distance = labDistance(entries[index].lab, centroids[centroids.length - 1]);
+      nearestDistances[index] = Math.min(nearestDistances[index], distance);
+      const score = nearestDistances[index] * Math.sqrt(entries[index].count);
       if (score > bestScore) {
         bestScore = score;
-        splitIndex = i;
+        bestIndex = index;
       }
     }
-    if (splitIndex < 0) break;
-
-    const box = boxes[splitIndex];
-    const ranges = {
-      l: labRange(box.colors, 'l') * 1.15,
-      a: labRange(box.colors, 'a'),
-      b: labRange(box.colors, 'b'),
-    };
-    const channel = (Object.keys(ranges) as (keyof Lab)[]).sort((a, b) => ranges[b] - ranges[a])[0];
-    box.colors.sort((a, b) => a.lab[channel] - b.lab[channel]);
-    let running = 0;
-    let pivot = 1;
-    for (; pivot < box.colors.length; pivot += 1) {
-      running += box.colors[pivot - 1].count;
-      if (running >= box.weight / 2) break;
-    }
-    const left = box.colors.slice(0, pivot);
-    const right = box.colors.slice(pivot);
-    const leftWeight = left.reduce((sum, color) => sum + color.count, 0);
-    boxes.splice(
-      splitIndex,
-      1,
-      { colors: left, weight: leftWeight },
-      { colors: right, weight: box.weight - leftWeight },
-    );
+    if (bestIndex < 0 || bestScore <= 0) break;
+    centroids.push(entries[bestIndex].lab);
   }
-  return boxes.map((box) => averageLab(box.colors, box.weight));
+  return centroids;
 }
 
 export function buildPalette(colors: RGB[], targetSize: number): RGB[] {

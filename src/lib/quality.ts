@@ -17,7 +17,27 @@ export interface OccupancyMetrics {
   intersectionOverUnion: number;
 }
 
+export interface SpatialColorMetrics extends PaletteErrorMetrics {
+  matched: number;
+  actual: number;
+  expected: number;
+  coverage: number;
+}
+
 const coordinateKey = ({ x, y, z }: Pick<Voxel, 'x' | 'y' | 'z'>) => `${x}:${y}:${z}`;
+
+function summarizeDistances(distances: number[]): PaletteErrorMetrics {
+  if (!distances.length) return { mean: 0, rootMeanSquare: 0, p95: 0, max: 0 };
+  distances.sort((a, b) => a - b);
+  const sum = distances.reduce((total, distance) => total + distance, 0);
+  const squareSum = distances.reduce((total, distance) => total + distance * distance, 0);
+  return {
+    mean: sum / distances.length,
+    rootMeanSquare: Math.sqrt(squareSum / distances.length),
+    p95: distances[Math.min(distances.length - 1, Math.ceil(distances.length * 0.95) - 1)],
+    max: distances[distances.length - 1],
+  };
+}
 
 export function measurePaletteError(colors: RGB[], palette: RGB[]): PaletteErrorMetrics {
   if (!colors.length) return { mean: 0, rootMeanSquare: 0, p95: 0, max: 0 };
@@ -33,15 +53,8 @@ export function measurePaletteError(colors: RGB[], palette: RGB[]): PaletteError
     let best = Number.POSITIVE_INFINITY;
     for (const candidate of palette) best = Math.min(best, perceptualColorDistance(color, candidate));
     return best;
-  }).sort((a, b) => a - b);
-  const sum = distances.reduce((total, distance) => total + distance, 0);
-  const squareSum = distances.reduce((total, distance) => total + distance * distance, 0);
-  return {
-    mean: sum / distances.length,
-    rootMeanSquare: Math.sqrt(squareSum / distances.length),
-    p95: distances[Math.min(distances.length - 1, Math.ceil(distances.length * 0.95) - 1)],
-    max: distances[distances.length - 1],
-  };
+  });
+  return summarizeDistances(distances);
 }
 
 export function compareOccupancy(actual: Voxel[], expected: Voxel[]): OccupancyMetrics {
@@ -57,6 +70,32 @@ export function compareOccupancy(actual: Voxel[], expected: Voxel[]): OccupancyM
     precision: actualKeys.size ? intersection / actualKeys.size : expectedKeys.size ? 0 : 1,
     recall: expectedKeys.size ? intersection / expectedKeys.size : actualKeys.size ? 0 : 1,
     intersectionOverUnion: union ? intersection / union : 1,
+  };
+}
+
+export function compareVoxelColors(actual: Voxel[], expected: Voxel[]): SpatialColorMetrics {
+  const actualByCoordinate = new Map(actual.map((voxel) => [coordinateKey(voxel), voxel]));
+  const distances: number[] = [];
+  for (const reference of expected) {
+    const voxel = actualByCoordinate.get(coordinateKey(reference));
+    if (voxel) distances.push(perceptualColorDistance(voxel, reference));
+  }
+  const distribution = distances.length
+    ? summarizeDistances(distances)
+    : expected.length
+      ? {
+          mean: Number.POSITIVE_INFINITY,
+          rootMeanSquare: Number.POSITIVE_INFINITY,
+          p95: Number.POSITIVE_INFINITY,
+          max: Number.POSITIVE_INFINITY,
+        }
+      : summarizeDistances([]);
+  return {
+    ...distribution,
+    matched: distances.length,
+    actual: actualByCoordinate.size,
+    expected: new Set(expected.map(coordinateKey)).size,
+    coverage: expected.length ? distances.length / new Set(expected.map(coordinateKey)).size : actual.length ? 0 : 1,
   };
 }
 

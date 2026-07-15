@@ -48,6 +48,8 @@ npm run inventory:glb -- "$VOXEL_TEST_ASSET_DIR/rocketl.glb"
 - Occupancy precision, recall, and intersection-over-union compare generated geometry with a known voxel reference.
 - A deterministic model fingerprint catches unintended changes to dimensions, palette, coordinates, or color assignment while ignoring voxel array order.
 
+Synthetic pass/fail ceilings live in `quality/conversion-thresholds.json`. The ordered-band fixture is deliberately spatial: it fails if the correct palette colors are present but assigned as noise, as well as when palette reduction merges distinct source regions.
+
 The next harness milestone must add synthetic textured GLBs with known expected colors, alpha behavior, UV transforms, and geometry. Real-asset runs then supplement those deterministic fixtures with screenshot and performance evidence.
 
 ## Known baseline constraints

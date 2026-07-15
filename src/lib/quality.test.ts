@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Voxel, VoxelModel } from '../types';
-import { compareOccupancy, measurePaletteError, voxelModelFingerprint } from './quality';
+import { compareOccupancy, compareVoxelColors, measurePaletteError, voxelModelFingerprint } from './quality';
 
 const voxel = (x: number, y = 0, z = 0, colorIndex = 0): Voxel => ({
   x,
@@ -34,6 +34,21 @@ describe('conversion quality metrics', () => {
     expect(metrics.precision).toBeCloseTo(2 / 3);
     expect(metrics.recall).toBeCloseTo(2 / 3);
     expect(metrics.intersectionOverUnion).toBeCloseTo(0.5);
+  });
+
+  it('detects spatially scrambled colors even when the palette itself is correct', () => {
+    const expected = [voxel(0), voxel(1), voxel(2, 0, 0, 1), voxel(3, 0, 0, 1)];
+    const scrambled = [voxel(0, 0, 0, 1), voxel(1, 0, 0, 1), voxel(2), voxel(3)];
+    const metrics = compareVoxelColors(scrambled, expected);
+    expect(metrics).toMatchObject({ matched: 4, actual: 4, expected: 4, coverage: 1 });
+    expect(metrics.mean).toBeGreaterThan(30);
+    expect(compareVoxelColors(expected, expected).max).toBe(0);
+  });
+
+  it('reports color coverage separately from spatial error', () => {
+    const metrics = compareVoxelColors([voxel(0)], [voxel(0), voxel(1)]);
+    expect(metrics.coverage).toBe(0.5);
+    expect(metrics.mean).toBe(0);
   });
 
   it('fingerprints model content independently of voxel ordering', () => {

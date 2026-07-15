@@ -9,7 +9,9 @@ import {
   Texture,
 } from 'three';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
+import qualityThresholds from '../../quality/conversion-thresholds.json';
 import type { SourceModel, VoxelizeOptions } from '../types';
+import { compareVoxelColors, measurePaletteError } from './quality';
 import { voxelizeModel } from './voxelize';
 
 const makeSource = (): SourceModel => {
@@ -33,6 +35,38 @@ const baseOptions: VoxelizeOptions = {
   fillMode: 'surface',
   alphaThreshold: 0.1,
 };
+
+function makeTexture(data: Uint8ClampedArray, width: number, height: number) {
+  vi.stubGlobal('document', {
+    createElement: () => ({
+      width: 0,
+      height: 0,
+      getContext: () => ({
+        drawImage: () => undefined,
+        getImageData: () => ({ data }),
+      }),
+    }),
+  });
+  const texture = new Texture({ width, height } as TexImageSource);
+  texture.colorSpace = SRGBColorSpace;
+  texture.flipY = false;
+  return texture;
+}
+
+function makeTexturedPlane(texture: Texture): SourceModel {
+  const scene = new Group();
+  scene.add(new Mesh(new PlaneGeometry(1, 1, 1, 1), new MeshStandardMaterial({ color: '#ffffff', map: texture })));
+  scene.updateMatrixWorld(true);
+  return {
+    scene,
+    name: 'textured-plane.glb',
+    bytes: 1024,
+    triangles: 2,
+    meshes: 1,
+    materials: 1,
+    textures: 1,
+  };
+}
 
 beforeAll(() => {
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
@@ -82,32 +116,7 @@ describe('voxelizeModel', () => {
       255, 0, 0, 255, 255, 0, 0, 255,
       0, 0, 255, 255, 0, 0, 255, 255,
     ]);
-    vi.stubGlobal('document', {
-      createElement: () => ({
-        width: 0,
-        height: 0,
-        getContext: () => ({
-          drawImage: () => undefined,
-          getImageData: () => ({ data: texturePixels }),
-        }),
-      }),
-    });
-    const texture = new Texture({ width: 2, height: 2 } as TexImageSource);
-    texture.colorSpace = SRGBColorSpace;
-    texture.flipY = false;
-    const geometry = new PlaneGeometry(1, 1, 1, 1);
-    const scene = new Group();
-    scene.add(new Mesh(geometry, new MeshStandardMaterial({ color: '#ffffff', map: texture })));
-    scene.updateMatrixWorld(true);
-    const source: SourceModel = {
-      scene,
-      name: 'textured-plane.glb',
-      bytes: 1024,
-      triangles: 2,
-      meshes: 1,
-      materials: 1,
-      textures: 1,
-    };
+    const source = makeTexturedPlane(makeTexture(texturePixels, 2, 2));
 
     const result = await voxelizeModel(source, { ...baseOptions, paletteSize: 8 }, () => undefined);
     expect(result.palette.some((color) => color.r > color.b * 1.5)).toBe(true);
@@ -121,5 +130,74 @@ describe('voxelizeModel', () => {
     // convention that previously caused unrelated atlas regions to be sampled.
     expect(average(bottom, 'r')).toBeGreaterThan(average(bottom, 'b'));
     expect(average(top, 'b')).toBeGreaterThan(average(top, 'r'));
+  });
+
+  it('keeps ordered texture bands spatially coherent instead of producing palette noise', async () => {
+    const bands = [
+      { r: 239, g: 45, b: 53 },
+      { r: 40, g: 199, b: 82 },
+      { r: 45, g: 85, b: 235 },
+      { r: 244, g: 195, b: 44 },
+    ];
+    const pixels = new Uint8ClampedArray(8 * 2 * 4);
+    for (let y = 0; y < 2; y += 1) {
+      for (let x = 0; x < 8; x += 1) {
+        const color = bands[Math.floor(x / 2)];
+        const offset = (y * 8 + x) * 4;
+        pixels.set([color.r, color.g, color.b, 255], offset);
+      }
+    }
+    const result = await voxelizeModel(
+      makeTexturedPlane(makeTexture(pixels, 8, 2)),
+      { ...baseOptions, resolution: 32, paletteSize: 4 },
+      () => undefined,
+    );
+    const minX = Math.min(...result.voxels.map((voxel) => voxel.x));
+    const maxX = Math.max(...result.voxels.map((voxel) => voxel.x));
+    const occupiedWidth = maxX - minX + 1;
+    const reference = result.voxels.map((voxel) => {
+      const u = (voxel.x - minX + 0.5) / occupiedWidth;
+      const color = bands[Math.min(bands.length - 1, Math.floor(u * bands.length))];
+      return { ...voxel, ...color };
+    });
+    const metrics = compareVoxelColors(result.voxels, reference);
+    const paletteMetrics = measurePaletteError(bands, result.palette);
+    expect(metrics.coverage).toBe(1);
+    expect(metrics.mean).toBeLessThan(qualityThresholds.syntheticTextureBands.spatialMeanOklabMaximum);
+    expect(metrics.p95).toBeLessThan(qualityThresholds.syntheticTextureBands.spatialP95OklabMaximum);
+    expect(paletteMetrics.max).toBeLessThan(qualityThresholds.syntheticTextureBands.paletteMaximumOklabError);
+  });
+
+  it('uses the texture-selected alternate UV channel', async () => {
+    const pixels = new Uint8ClampedArray([
+      255, 0, 0, 255, 255, 0, 0, 255,
+      0, 0, 255, 255, 0, 0, 255, 255,
+    ]);
+    const texture = makeTexture(pixels, 2, 2);
+    texture.channel = 1;
+    const source = makeTexturedPlane(texture);
+    const mesh = source.scene.children[0] as Mesh;
+    const count = mesh.geometry.attributes.position.count;
+    const uv1 = new Float32Array(count * 2);
+    for (let index = 0; index < count; index += 1) {
+      uv1[index * 2] = 0.5;
+      uv1[index * 2 + 1] = 0;
+    }
+    mesh.geometry.setAttribute('uv1', new BufferAttribute(uv1, 2));
+
+    const result = await voxelizeModel(source, { ...baseOptions, paletteSize: 4 }, () => undefined);
+    expect(result.voxels.every((voxel) => voxel.r > voxel.b * 2)).toBe(true);
+  });
+
+  it('rejects fully transparent texture samples at the configured alpha threshold', async () => {
+    const transparent = new Uint8ClampedArray([
+      255, 0, 0, 0, 255, 0, 0, 0,
+      255, 0, 0, 0, 255, 0, 0, 0,
+    ]);
+    await expect(voxelizeModel(
+      makeTexturedPlane(makeTexture(transparent, 2, 2)),
+      { ...baseOptions, alphaThreshold: 0.1 },
+      () => undefined,
+    )).rejects.toThrow('No opaque voxel cells were produced');
   });
 });

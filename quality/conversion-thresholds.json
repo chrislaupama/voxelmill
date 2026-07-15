@@ -1,0 +1,7 @@
+{
+  "syntheticTextureBands": {
+    "spatialMeanOklabMaximum": 8,
+    "spatialP95OklabMaximum": 25,
+    "paletteMaximumOklabError": 10
+  }
+}

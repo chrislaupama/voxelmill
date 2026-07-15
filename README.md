@@ -41,6 +41,12 @@ To inspect the structure and identity of private GLB regression assets without c
 npm run inventory:glb -- /path/to/model.glb
 ```
 
+When the full private regression corpus is available, verify every file against its recorded size and SHA-256 identity:
+
+```bash
+VOXEL_TEST_ASSET_DIR=/path/to/asset-root npm run check:assets
+```
+
 ## Deploy to Cloudflare Pages
 
 ```bash
