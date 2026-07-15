@@ -13,7 +13,6 @@ import {
 import type {
   EditorTool,
   MirrorSettings,
-  RGB,
   SourceModel,
   Voxel,
   VoxelCoordinate,
@@ -31,9 +30,8 @@ interface Props {
   onVoxelAction: (voxel: Voxel, normal: VoxelCoordinate) => void;
 }
 
-interface ColorBatchProps {
+interface VoxelInstancesProps {
   voxels: Voxel[];
-  color: RGB;
   size: VoxelModel['size'];
   geometry: BoxGeometry;
   interactive: boolean;
@@ -47,25 +45,22 @@ const faceNormal = (event: ThreeEvent<MouseEvent>): VoxelCoordinate => {
   return { x: Math.round(normal.x), y: Math.round(normal.y), z: Math.round(normal.z) };
 };
 
-function ColorBatch({
+function VoxelInstances({
   voxels,
-  color,
   size,
   geometry,
   interactive,
   onHover,
   onHoverEnd,
   onAction,
-}: ColorBatchProps) {
+}: VoxelInstancesProps) {
   const mesh = useRef<InstancedMesh>(null);
   const material = useMemo(
-    () => {
-      const materialColor = new Color().setRGB(color.r / 255, color.g / 255, color.b / 255, SRGBColorSpace);
-      return new MeshStandardMaterial({ color: materialColor, roughness: 0.78, metalness: 0.02 });
-    },
-    [color.b, color.g, color.r],
+    () => new MeshStandardMaterial({ color: '#ffffff', roughness: 0.78, metalness: 0.02 }),
+    [],
   );
   const helper = useMemo(() => new Object3D(), []);
+  const workingColor = useMemo(() => new Color(), []);
 
   useLayoutEffect(() => {
     if (!mesh.current) return;
@@ -77,9 +72,12 @@ function ColorBatch({
       );
       helper.updateMatrix();
       mesh.current!.setMatrixAt(index, helper.matrix);
+      workingColor.setRGB(voxel.r / 255, voxel.g / 255, voxel.b / 255, SRGBColorSpace);
+      mesh.current!.setColorAt(index, workingColor);
     });
     mesh.current.instanceMatrix.needsUpdate = true;
-  }, [helper, size, voxels]);
+    if (mesh.current.instanceColor) mesh.current.instanceColor.needsUpdate = true;
+  }, [helper, size, voxels, workingColor]);
 
   const voxelFromEvent = (event: ThreeEvent<MouseEvent>) =>
     event.instanceId === undefined ? undefined : voxels[event.instanceId];
@@ -169,11 +167,6 @@ interface VoxelMeshProps {
 function VoxelMesh({ model, tool, mirrorSettings, mirrorPreview, onVoxelAction }: VoxelMeshProps) {
   const [hovered, setHovered] = useState<VoxelCoordinate | null>(null);
   const geometry = useMemo(() => new BoxGeometry(0.94, 0.94, 0.94), []);
-  const batches = useMemo(() => {
-    const grouped = model.palette.map(() => [] as Voxel[]);
-    for (const voxel of model.voxels) grouped[voxel.colorIndex]?.push(voxel);
-    return grouped;
-  }, [model]);
   const scale = 3.6 / Math.max(model.size.x, model.size.y, model.size.z);
   const interactive = tool === 'add' || tool === 'remove' || tool === 'paint';
 
@@ -187,21 +180,15 @@ function VoxelMesh({ model, tool, mirrorSettings, mirrorPreview, onVoxelAction }
 
   return (
     <group scale={scale}>
-      {batches.map((voxels, colorIndex) =>
-        voxels.length ? (
-          <ColorBatch
-            key={colorIndex}
-            voxels={voxels}
-            color={model.palette[colorIndex]}
-            size={model.size}
-            geometry={geometry}
-            interactive={interactive}
-            onHover={updateHover}
-            onHoverEnd={() => setHovered(null)}
-            onAction={onVoxelAction}
-          />
-        ) : null,
-      )}
+      <VoxelInstances
+        voxels={model.voxels}
+        size={model.size}
+        geometry={geometry}
+        interactive={interactive}
+        onHover={updateHover}
+        onHoverEnd={() => setHovered(null)}
+        onAction={onVoxelAction}
+      />
       {hovered && interactive ? (
         <mesh
           position={[

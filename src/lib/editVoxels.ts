@@ -1,7 +1,8 @@
 import type { MirrorSettings, RGB, Voxel, VoxelCoordinate, VoxelModel } from '../types';
 import { nearestPaletteIndex } from './palette';
+import { buildVoxelIndex, packVoxelCoordinate } from './voxelIndex';
 
-export const voxelKey = ({ x, y, z }: VoxelCoordinate) => `${x}:${y}:${z}`;
+export const voxelKey = packVoxelCoordinate;
 
 const sameColor = (a: RGB, b: RGB) => a.r === b.r && a.g === b.g && a.b === b.b;
 
@@ -34,7 +35,7 @@ export function addVoxel(model: VoxelModel, coordinate: VoxelCoordinate, color: 
   const movedVoxels = shift.x || shift.y || shift.z
     ? model.voxels.map((voxel) => ({ ...voxel, x: voxel.x + shift.x, y: voxel.y + shift.y, z: voxel.z + shift.z }))
     : model.voxels;
-  if (movedVoxels.some((voxel) => voxel.x === target.x && voxel.y === target.y && voxel.z === target.z)) {
+  if (buildVoxelIndex(movedVoxels).has(packVoxelCoordinate(target))) {
     return model;
   }
   const resolved = paletteColor(model, color);
@@ -47,19 +48,21 @@ export function addVoxel(model: VoxelModel, coordinate: VoxelCoordinate, color: 
 }
 
 export function removeVoxel(model: VoxelModel, coordinate: VoxelCoordinate): VoxelModel {
-  const key = voxelKey(coordinate);
-  const voxels = model.voxels.filter((voxel) => voxelKey(voxel) !== key);
-  return voxels.length === model.voxels.length ? model : { ...model, voxels };
+  const entry = buildVoxelIndex(model.voxels).get(packVoxelCoordinate(coordinate));
+  if (!entry) return model;
+  const voxels = [...model.voxels];
+  voxels.splice(entry.position, 1);
+  return { ...model, voxels };
 }
 
 export function paintVoxel(model: VoxelModel, coordinate: VoxelCoordinate, color: RGB): VoxelModel {
-  const index = model.voxels.findIndex((voxel) => voxelKey(voxel) === voxelKey(coordinate));
-  if (index < 0) return model;
+  const entry = buildVoxelIndex(model.voxels).get(packVoxelCoordinate(coordinate));
+  if (!entry) return model;
   const resolved = paletteColor(model, color);
-  const current = model.voxels[index];
+  const current = entry.voxel;
   if (current.colorIndex === resolved.colorIndex && sameColor(current, resolved.color)) return model;
   const voxels = [...model.voxels];
-  voxels[index] = { ...current, ...resolved.color, colorIndex: resolved.colorIndex };
+  voxels[entry.position] = { ...current, ...resolved.color, colorIndex: resolved.colorIndex };
   return { ...model, palette: resolved.palette, voxels };
 }
 
@@ -77,7 +80,7 @@ const mirroredCoordinate = (voxel: Voxel, settings: MirrorSettings): Voxel => ({
 
 export function buildMirrorPreview(model: VoxelModel, settings: MirrorSettings): Voxel[] {
   const limit = model.size[settings.axis];
-  const preview = new Map<string, Voxel>();
+  const preview = new Map<number, Voxel>();
   for (const voxel of model.voxels) {
     if (!isSourceVoxel(voxel, settings)) continue;
     const mirrored = mirroredCoordinate(voxel, settings);
@@ -91,7 +94,7 @@ export function buildMirrorPreview(model: VoxelModel, settings: MirrorSettings):
 export function mirrorModel(model: VoxelModel, settings: MirrorSettings): VoxelModel {
   const source = model.voxels.filter((voxel) => isSourceVoxel(voxel, settings));
   const preview = buildMirrorPreview(model, settings);
-  const voxels = new Map<string, Voxel>();
+  const voxels = new Map<number, Voxel>();
   for (const voxel of source) voxels.set(voxelKey(voxel), voxel);
   for (const voxel of preview) voxels.set(voxelKey(voxel), voxel);
   return { ...model, voxels: [...voxels.values()] };
