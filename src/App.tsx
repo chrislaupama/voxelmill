@@ -28,6 +28,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ModelViewport } from './components/ModelViewport';
 import { addVoxel, buildMirrorPreview, mirrorModel, paintVoxel, removeVoxel } from './lib/editVoxels';
 import { loadGlb } from './lib/modelLoader';
+import { applyVoxelPatch, createVoxelPatch, type VoxelPatch } from './lib/voxelHistory';
 import { isConversionCancelled, voxelizeGlbInWorker } from './lib/voxelizeWorker';
 import { downloadVox } from './lib/voxExport';
 import type {
@@ -121,7 +122,7 @@ function App() {
     direction: 'negativeToPositive',
     plane: 1,
   });
-  const [history, setHistory] = useState<{ past: VoxelModel[]; future: VoxelModel[] }>({ past: [], future: [] });
+  const [history, setHistory] = useState<{ past: VoxelPatch[]; future: VoxelPatch[] }>({ past: [], future: [] });
 
   const mirrorPreview = useMemo(
     () => voxelModel && tool === 'mirror' ? buildMirrorPreview(voxelModel, mirrorSettings) : [],
@@ -220,22 +221,24 @@ function App() {
 
   const commitEdit = useCallback((next: VoxelModel) => {
     if (!voxelModel || next === voxelModel) return;
-    setHistory((current) => ({ past: [...current.past, voxelModel].slice(-40), future: [] }));
+    const patch = createVoxelPatch(voxelModel, next);
+    if (!patch.changes.length) return;
+    setHistory((current) => ({ past: [...current.past, patch].slice(-100), future: [] }));
     setVoxelModel(next);
   }, [voxelModel]);
 
   const undo = useCallback(() => {
     if (!voxelModel || !history.past.length) return;
-    const previous = history.past[history.past.length - 1];
-    setHistory({ past: history.past.slice(0, -1), future: [voxelModel, ...history.future].slice(0, 40) });
-    setVoxelModel(previous);
+    const patch = history.past[history.past.length - 1];
+    setHistory({ past: history.past.slice(0, -1), future: [patch, ...history.future].slice(0, 100) });
+    setVoxelModel(applyVoxelPatch(voxelModel, patch, 'undo'));
   }, [history, voxelModel]);
 
   const redo = useCallback(() => {
     if (!voxelModel || !history.future.length) return;
-    const next = history.future[0];
-    setHistory({ past: [...history.past, voxelModel].slice(-40), future: history.future.slice(1) });
-    setVoxelModel(next);
+    const patch = history.future[0];
+    setHistory({ past: [...history.past, patch].slice(-100), future: history.future.slice(1) });
+    setVoxelModel(applyVoxelPatch(voxelModel, patch, 'redo'));
   }, [history, voxelModel]);
 
   useEffect(() => {
