@@ -36,6 +36,14 @@ npm run build
 
 The static output is written to `dist/`.
 
+## Deploy to Cloudflare Pages
+
+```bash
+npm run deploy
+```
+
+Production is hosted at [voxelmill.pages.dev](https://voxelmill.pages.dev/). The deployment configuration lives in `wrangler.jsonc`; static security headers are defined in `public/_headers`.
+
 ## Notes
 
 The converter is intended for static or posed GLB assets. It bakes the current pose of skinned meshes. Very high resolutions and large triangle counts require more processing time because every triangle is tested against candidate voxel cells. The VOX exporter swaps the Three.js Y-up axis to MagicaVoxel's Z-up axis.
