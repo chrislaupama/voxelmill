@@ -42,7 +42,7 @@ The static output is written to `dist/`.
 npm run deploy
 ```
 
-Production is hosted at [voxelmill.pages.dev](https://voxelmill.pages.dev/). The deployment configuration lives in `wrangler.jsonc`; static security headers are defined in `public/_headers`.
+Production is hosted at [voxelmill.com](https://voxelmill.com/), with [voxelmill.pages.dev](https://voxelmill.pages.dev/) retained as the Cloudflare Pages address. The deployment configuration lives in `wrangler.jsonc`; static security headers are defined in `public/_headers`.
 
 ## Notes
 
