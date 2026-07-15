@@ -22,9 +22,12 @@ export async function loadGlbBuffer(buffer: ArrayBuffer, name: string, bytes = b
     const meshMaterials = Array.isArray(object.material) ? object.material : [object.material];
     for (const material of meshMaterials) {
       materials.add(material);
-      if (material instanceof MeshStandardMaterial && material.map) {
-        material.map.colorSpace = SRGBColorSpace;
-        textures.add(material.map);
+      if (material instanceof MeshStandardMaterial) {
+        for (const texture of [material.map, material.emissiveMap]) {
+          if (!texture) continue;
+          texture.colorSpace = SRGBColorSpace;
+          textures.add(texture);
+        }
       }
     }
   });

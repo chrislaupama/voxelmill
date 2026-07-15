@@ -11,6 +11,8 @@ VoxelMill is a local-first browser application for converting textured GLB model
 - Samples each material's base color and embedded base-color texture using interpolated UVs.
 - Reduces sampled colors with weighted OKLab clustering to a configurable palette of up to 255 colors.
 - Uses linear-light material blending, bilinear texel reads, and multi-point voxel coverage sampling.
+- Runs conversion in a cancellable background worker with Draft, Balanced, and High sampling modes.
+- Honors glTF material alpha cutoffs and can optionally bake emissive color/texture details.
 - Produces either a hollow surface shell or a flood-filled solid volume.
 - Previews the result with instanced Three.js geometry.
 - Adds, erases, and paints voxels directly in the 3D viewport.

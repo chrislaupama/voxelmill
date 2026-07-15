@@ -12,7 +12,7 @@ import {
   type Material,
   type Texture,
 } from 'three';
-import type { ProgressUpdate, RGB, SourceModel, VoxelModel, VoxelizeOptions } from '../types';
+import type { MaterialColorMode, ProgressUpdate, RGB, SourceModel, VoxelModel, VoxelizeOptions } from '../types';
 import { buildPalette, linearToSrgb, nearestPaletteIndex, srgbToLinear } from './palette';
 
 interface AccumulatedColor {
@@ -38,6 +38,16 @@ const closest = new Vector3();
 const sampleProbe = new Vector3();
 const cellBox = new Box3();
 const center = new Vector3();
+const BALANCED_COLOR_PROBES = [
+  [0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0],
+  [0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1],
+] as const;
+const HIGH_COLOR_PROBES = [
+  ...BALANCED_COLOR_PROBES,
+  [0, 0.5, 0.5], [1, 0.5, 0.5],
+  [0.5, 0, 0.5], [0.5, 1, 0.5],
+  [0.5, 0.5, 0], [0.5, 0.5, 1],
+] as const;
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
@@ -121,17 +131,22 @@ function materialAt(mesh: Mesh, elementOffset: number): Material {
 function sampleColor(
   material: Material,
   uvAttribute: BufferAttribute | undefined,
+  emissiveUvAttribute: BufferAttribute | undefined,
   colorAttribute: BufferAttribute | undefined,
   aIndex: number,
   bIndex: number,
   cIndex: number,
   weights: Vector3,
+  materialColorMode: MaterialColorMode,
 ): { color: RGB; alpha: number } {
   const coloredMaterial = material as Material & {
     color?: Color;
     map?: Texture;
     opacity?: number;
     vertexColors?: boolean;
+    emissive?: Color;
+    emissiveMap?: Texture;
+    emissiveIntensity?: number;
   };
   let r = 1;
   let g = 1;
@@ -169,6 +184,29 @@ function sampleColor(
       alpha *= texel[3] / 255;
     }
   }
+
+  if (materialColorMode === 'appearance' && coloredMaterial.emissive) {
+    const intensity = coloredMaterial.emissiveIntensity ?? 1;
+    let emissiveR = coloredMaterial.emissive.r * intensity;
+    let emissiveG = coloredMaterial.emissive.g * intensity;
+    let emissiveB = coloredMaterial.emissive.b * intensity;
+    if (coloredMaterial.emissiveMap && emissiveUvAttribute) {
+      const uv = new Vector2(
+        emissiveUvAttribute.getX(aIndex) * weights.x + emissiveUvAttribute.getX(bIndex) * weights.y + emissiveUvAttribute.getX(cIndex) * weights.z,
+        emissiveUvAttribute.getY(aIndex) * weights.x + emissiveUvAttribute.getY(bIndex) * weights.y + emissiveUvAttribute.getY(cIndex) * weights.z,
+      );
+      const texel = sampleTexture(coloredMaterial.emissiveMap, uv);
+      if (texel) {
+        const textureIsSrgb = coloredMaterial.emissiveMap.colorSpace === SRGBColorSpace;
+        emissiveR *= textureIsSrgb ? srgbToLinear(texel[0]) : texel[0] / 255;
+        emissiveG *= textureIsSrgb ? srgbToLinear(texel[1]) : texel[1] / 255;
+        emissiveB *= textureIsSrgb ? srgbToLinear(texel[2]) : texel[2] / 255;
+      }
+    }
+    r += emissiveR;
+    g += emissiveG;
+    b += emissiveB;
+  }
   return {
     color: { r: linearToSrgb(r), g: linearToSrgb(g), b: linearToSrgb(b) },
     alpha,
@@ -180,13 +218,15 @@ function samplePointColor(
   point: Vector3,
   material: Material,
   uvAttribute: BufferAttribute | undefined,
+  emissiveUvAttribute: BufferAttribute | undefined,
   colorAttribute: BufferAttribute | undefined,
   aIndex: number,
   bIndex: number,
   cIndex: number,
+  materialColorMode: MaterialColorMode,
 ) {
   triangle.getBarycoord(point, barycentric);
-  return sampleColor(material, uvAttribute, colorAttribute, aIndex, bIndex, cIndex, barycentric);
+  return sampleColor(material, uvAttribute, emissiveUvAttribute, colorAttribute, aIndex, bIndex, cIndex, barycentric, materialColorMode);
 }
 
 function vertexWorldPosition(mesh: Mesh, vertexIndex: number, target: Vector3) {
@@ -349,10 +389,24 @@ export async function voxelizeModel(
       const maxY = clamp(Math.floor((triangleBounds.max.y - origin.y) / voxelSize), 0, sy - 1);
       const maxZ = clamp(Math.floor((triangleBounds.max.z - origin.z) / voxelSize), 0, sz - 1);
       const material = materialAt(mesh, elementOffset);
+      if (!material.visible) continue;
       const texture = (material as Material & { map?: Texture }).map;
       const uvChannel = texture?.channel ?? 0;
       const uvAttributeName = uvChannel === 0 ? 'uv' : `uv${uvChannel}`;
       const uv = geometry.attributes[uvAttributeName] as BufferAttribute | undefined;
+      const emissiveTexture = (material as Material & { emissiveMap?: Texture }).emissiveMap;
+      const emissiveUvChannel = emissiveTexture?.channel ?? 0;
+      const emissiveUvAttributeName = emissiveUvChannel === 0 ? 'uv' : `uv${emissiveUvChannel}`;
+      const emissiveUv = geometry.attributes[emissiveUvAttributeName] as BufferAttribute | undefined;
+      const alphaThreshold = Math.max(
+        options.alphaThreshold,
+        (material as Material & { alphaTest?: number }).alphaTest ?? 0,
+      ) * 255;
+      const colorProbes = options.samplingQuality === 'draft'
+        ? []
+        : options.samplingQuality === 'high'
+          ? HIGH_COLOR_PROBES
+          : BALANCED_COLOR_PROBES;
 
       for (let z = minZ; z <= maxZ; z += 1) {
         for (let y = minY; y <= maxY; y += 1) {
@@ -367,16 +421,18 @@ export async function voxelizeModel(
               closest,
               material,
               uv,
+              emissiveUv,
               colorAttribute,
               aIndex,
               bIndex,
               cIndex,
+              options.materialColorMode,
             );
             let sampleR = 0;
             let sampleG = 0;
             let sampleB = 0;
             let sampleCount = 0;
-            if (sampled.alpha >= options.alphaThreshold * 255) {
+            if (sampled.alpha >= alphaThreshold) {
               sampleR += sampled.color.r;
               sampleG += sampled.color.g;
               sampleB += sampled.color.b;
@@ -385,12 +441,16 @@ export async function voxelizeModel(
 
             // Project the cell's eight corners onto the triangle. This approximates the
             // texture area covered by the voxel and prevents single-texel aliasing.
-            if ((texture && uv) || ((material as Material & { vertexColors?: boolean }).vertexColors && colorAttribute)) {
-              for (let cornerIndex = 0; cornerIndex < 8; cornerIndex += 1) {
+            if (colorProbes.length && (
+              (texture && uv)
+              || (options.materialColorMode === 'appearance' && emissiveTexture && emissiveUv)
+              || ((material as Material & { vertexColors?: boolean }).vertexColors && colorAttribute)
+            )) {
+              for (const probe of colorProbes) {
                 sampleProbe.set(
-                  cornerIndex & 1 ? cellBox.max.x : cellBox.min.x,
-                  cornerIndex & 2 ? cellBox.max.y : cellBox.min.y,
-                  cornerIndex & 4 ? cellBox.max.z : cellBox.min.z,
+                  cellBox.min.x + (cellBox.max.x - cellBox.min.x) * probe[0],
+                  cellBox.min.y + (cellBox.max.y - cellBox.min.y) * probe[1],
+                  cellBox.min.z + (cellBox.max.z - cellBox.min.z) * probe[2],
                 );
                 triangle.closestPointToPoint(sampleProbe, closest);
                 if (!cellBox.containsPoint(closest)) continue;
@@ -399,12 +459,14 @@ export async function voxelizeModel(
                   closest,
                   material,
                   uv,
+                  emissiveUv,
                   colorAttribute,
                   aIndex,
                   bIndex,
                   cIndex,
+                  options.materialColorMode,
                 );
-                if (sampled.alpha < options.alphaThreshold * 255) continue;
+                if (sampled.alpha < alphaThreshold) continue;
                 sampleR += sampled.color.r;
                 sampleG += sampled.color.g;
                 sampleB += sampled.color.b;

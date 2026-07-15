@@ -33,10 +33,12 @@ import { downloadVox } from './lib/voxExport';
 import type {
   EditorTool,
   FillMode,
+  MaterialColorMode,
   MirrorAxis,
   MirrorSettings,
   ProgressUpdate,
   RGB,
+  SamplingQuality,
   SourceModel,
   Voxel,
   VoxelCoordinate,
@@ -49,6 +51,8 @@ const DEFAULT_OPTIONS: VoxelizeOptions = {
   paletteSize: 96,
   fillMode: 'solid',
   alphaThreshold: 0.1,
+  samplingQuality: 'balanced',
+  materialColorMode: 'baseColor',
 };
 
 const formatBytes = (bytes: number) => {
@@ -535,6 +539,31 @@ function App() {
               </button>
               {advancedOpen ? (
                 <div className="advanced-control">
+                  <label className="advanced-select-label" htmlFor="sampling-quality">
+                    <span>Texture sampling</span>
+                    <select
+                      id="sampling-quality"
+                      value={options.samplingQuality}
+                      disabled={busy}
+                      onChange={(event) => updateOption('samplingQuality', event.target.value as SamplingQuality)}
+                    >
+                      <option value="draft">Draft</option>
+                      <option value="balanced">Balanced</option>
+                      <option value="high">High</option>
+                    </select>
+                  </label>
+                  <label className="advanced-select-label" htmlFor="material-color-mode">
+                    <span>Material color</span>
+                    <select
+                      id="material-color-mode"
+                      value={options.materialColorMode}
+                      disabled={busy}
+                      onChange={(event) => updateOption('materialColorMode', event.target.value as MaterialColorMode)}
+                    >
+                      <option value="baseColor">Base color</option>
+                      <option value="appearance">Base + emissive</option>
+                    </select>
+                  </label>
                   <label className="control-label" htmlFor="alpha">
                     <span>Alpha cutoff</span>
                     <output>{Math.round(options.alphaThreshold * 100)}%</output>

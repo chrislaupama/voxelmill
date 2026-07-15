@@ -34,6 +34,8 @@ const baseOptions: VoxelizeOptions = {
   paletteSize: 4,
   fillMode: 'surface',
   alphaThreshold: 0.1,
+  samplingQuality: 'balanced',
+  materialColorMode: 'baseColor',
 };
 
 function makeTexture(data: Uint8ClampedArray, width: number, height: number) {
@@ -199,5 +201,28 @@ describe('voxelizeModel', () => {
       { ...baseOptions, alphaThreshold: 0.1 },
       () => undefined,
     )).rejects.toThrow('No opaque voxel cells were produced');
+  });
+
+  it('respects a glTF material alpha cutoff above the global threshold', async () => {
+    const translucent = new Uint8ClampedArray([
+      255, 0, 0, 128, 255, 0, 0, 128,
+      255, 0, 0, 128, 255, 0, 0, 128,
+    ]);
+    const source = makeTexturedPlane(makeTexture(translucent, 2, 2));
+    const mesh = source.scene.children[0] as Mesh;
+    (mesh.material as MeshStandardMaterial).alphaTest = 0.75;
+    await expect(voxelizeModel(source, { ...baseOptions, alphaThreshold: 0.1 }, () => undefined))
+      .rejects.toThrow('No opaque voxel cells were produced');
+  });
+
+  it('can bake emissive material details into visible appearance colors', async () => {
+    const source = makeSource();
+    const mesh = source.scene.children[0] as Mesh;
+    mesh.material = new MeshStandardMaterial({ color: '#000000', emissive: '#ff2a20', emissiveIntensity: 1 });
+    const baseColor = await voxelizeModel(source, { ...baseOptions, materialColorMode: 'baseColor' }, () => undefined);
+    const appearance = await voxelizeModel(source, { ...baseOptions, materialColorMode: 'appearance' }, () => undefined);
+    expect(Math.max(...baseColor.voxels.map((voxel) => voxel.r))).toBeLessThan(10);
+    expect(Math.min(...appearance.voxels.map((voxel) => voxel.r))).toBeGreaterThan(200);
+    expect(Math.min(...appearance.voxels.map((voxel) => voxel.r - voxel.b))).toBeGreaterThan(100);
   });
 });
