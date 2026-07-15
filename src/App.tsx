@@ -231,10 +231,6 @@ function App() {
       }
       setBusy(true);
       setError(null);
-      setVoxelModel(null);
-      setHistory({ past: [], future: [] });
-      setSelection(new Set());
-      setTool('orbit');
       setProgress({ progress: 0.02, label: lowerName.endsWith('.voxelmill') ? 'Opening VoxelMill project' : 'Opening GLB model' });
       try {
         if (lowerName.endsWith('.voxelmill')) {
@@ -339,18 +335,43 @@ function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey)) return;
-      if (event.key.toLowerCase() === 'z') {
+      const target = event.target;
+      if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement || (target instanceof HTMLElement && target.isContentEditable)) return;
+      const key = event.key.toLowerCase();
+      if (event.metaKey || event.ctrlKey) {
+        if (key === 'z') {
+          event.preventDefault();
+          if (event.shiftKey) redo(); else undo();
+        } else if (key === 'y') {
+          event.preventDefault();
+          redo();
+        }
+        return;
+      }
+      if (!voxelModel) return;
+      const shortcutTools: Partial<Record<string, EditorTool>> = { q: 'orbit', s: 'select', a: 'add', e: 'remove', p: 'paint', f: 'fill', i: 'eyedropper', m: 'mirror' };
+      const shortcutTool = shortcutTools[key];
+      if (shortcutTool) {
         event.preventDefault();
-        if (event.shiftKey) redo(); else undo();
-      } else if (event.key.toLowerCase() === 'y') {
+        setPreviewMode('voxel');
+        setTool(shortcutTool);
+      } else if (key === 'g') {
         event.preventDefault();
-        redo();
+        setShowGrid((value) => !value);
+      } else if (key === '[' || key === ']') {
+        event.preventDefault();
+        setBrushRadius((value) => Math.max(0, Math.min(4, value + (key === '[' ? -1 : 1))));
+      } else if ((key === 'delete' || key === 'backspace') && selectedVoxels.length) {
+        event.preventDefault();
+        commitEdit(removeVoxels(voxelModel, selectedVoxels));
+        setSelection(new Set());
+      } else if (key === 'escape') {
+        setTool('orbit');
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [redo, undo]);
+  }, [commitEdit, redo, selectedVoxels, undo, voxelModel]);
 
   const activateTool = (nextTool: EditorTool) => {
     if (!voxelModel) return;
@@ -460,6 +481,7 @@ function App() {
                 <div className="segmented-control" aria-label="Preview mode">
                   <button
                     className={previewMode === 'source' ? 'active' : ''}
+                    aria-pressed={previewMode === 'source'}
                     onClick={() => setPreviewMode('source')}
                     disabled={!source}
                     type="button"
@@ -468,6 +490,7 @@ function App() {
                   </button>
                   <button
                     className={previewMode === 'voxel' ? 'active' : ''}
+                    aria-pressed={previewMode === 'voxel'}
                     onClick={() => voxelModel && setPreviewMode('voxel')}
                     disabled={!voxelModel}
                     type="button"
@@ -477,6 +500,7 @@ function App() {
                 </div>
                 <button
                   className={`icon-toggle ${showGrid ? 'active' : ''}`}
+                  aria-pressed={showGrid}
                   type="button"
                   onClick={() => setShowGrid((value) => !value)}
                   title="Toggle grid"
@@ -487,28 +511,28 @@ function App() {
               {voxelModel && previewMode === 'voxel' ? (
                 <div className="editor-toolbar" aria-label="Voxel editing tools">
                   <div className="editor-tool-group">
-                    <button className={tool === 'orbit' ? 'active' : ''} type="button" onClick={() => activateTool('orbit')} title="Orbit">
+                    <button className={tool === 'orbit' ? 'active' : ''} aria-pressed={tool === 'orbit'} aria-keyshortcuts="Q" type="button" onClick={() => activateTool('orbit')} title="Orbit (Q)">
                       <MousePointer2 size={16} /><span>Orbit</span>
                     </button>
-                    <button className={tool === 'select' ? 'active blue' : ''} type="button" onClick={() => activateTool('select')} title="Select voxels">
+                    <button className={tool === 'select' ? 'active blue' : ''} aria-pressed={tool === 'select'} aria-keyshortcuts="S" type="button" onClick={() => activateTool('select')} title="Select voxels (S)">
                       <Scan size={16} /><span>Select</span>
                     </button>
-                    <button className={tool === 'add' ? 'active' : ''} type="button" onClick={() => activateTool('add')} title="Add voxel">
+                    <button className={tool === 'add' ? 'active' : ''} aria-pressed={tool === 'add'} aria-keyshortcuts="A" type="button" onClick={() => activateTool('add')} title="Add voxel (A)">
                       <Plus size={16} /><span>Add</span>
                     </button>
-                    <button className={tool === 'remove' ? 'active danger' : ''} type="button" onClick={() => activateTool('remove')} title="Erase voxel">
+                    <button className={tool === 'remove' ? 'active danger' : ''} aria-pressed={tool === 'remove'} aria-keyshortcuts="E" type="button" onClick={() => activateTool('remove')} title="Erase voxel (E)">
                       <Eraser size={16} /><span>Erase</span>
                     </button>
-                    <button className={tool === 'paint' ? 'active blue' : ''} type="button" onClick={() => activateTool('paint')} title="Paint voxel">
+                    <button className={tool === 'paint' ? 'active blue' : ''} aria-pressed={tool === 'paint'} aria-keyshortcuts="P" type="button" onClick={() => activateTool('paint')} title="Paint voxel (P)">
                       <PaintBucket size={16} /><span>Paint</span>
                     </button>
-                    <button className={tool === 'fill' ? 'active blue' : ''} type="button" onClick={() => activateTool('fill')} title="Flood fill connected color">
+                    <button className={tool === 'fill' ? 'active blue' : ''} aria-pressed={tool === 'fill'} aria-keyshortcuts="F" type="button" onClick={() => activateTool('fill')} title="Flood fill connected color (F)">
                       <PaintBucket size={16} /><span>Fill</span>
                     </button>
-                    <button className={tool === 'eyedropper' ? 'active blue' : ''} type="button" onClick={() => activateTool('eyedropper')} title="Pick voxel color">
+                    <button className={tool === 'eyedropper' ? 'active blue' : ''} aria-pressed={tool === 'eyedropper'} aria-keyshortcuts="I" type="button" onClick={() => activateTool('eyedropper')} title="Pick voxel color (I)">
                       <Pipette size={16} /><span>Pick</span>
                     </button>
-                    <button className={tool === 'mirror' ? 'active' : ''} type="button" onClick={() => activateTool('mirror')} title="Mirror model">
+                    <button className={tool === 'mirror' ? 'active' : ''} aria-pressed={tool === 'mirror'} aria-keyshortcuts="M" type="button" onClick={() => activateTool('mirror')} title="Mirror model (M)">
                       <FlipHorizontal2 size={16} /><span>Mirror</span>
                     </button>
                   </div>
@@ -948,7 +972,7 @@ function App() {
           </div>
 
           <div className="inspector-footer">
-            {error ? <div className="error-message"><Info size={15} /> {error}</div> : null}
+            {error ? <div className="error-message" role="alert"><Info size={15} /><span>{error}</span><button type="button" onClick={() => setError(null)} aria-label="Dismiss error">×</button></div> : null}
             <button
               className="primary convert-button"
               type="button"

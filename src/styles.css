@@ -20,6 +20,7 @@ html, body, #root { width: 100%; min-width: 320px; height: 100%; margin: 0; }
 body { overflow: hidden; }
 button, input { font: inherit; }
 button { color: inherit; }
+button:focus-visible, input:focus-visible, select:focus-visible, canvas:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
 
 .app-shell { display: flex; flex-direction: column; height: 100%; background: #11130f; }
 .topbar {
@@ -219,6 +220,8 @@ button { color: inherit; }
 .inspector-footer { padding: 16px 20px 18px; border-top: 1px solid var(--line); background: #141712; box-shadow: 0 -12px 28px rgba(12,14,10,.35); }
 .error-message { display: flex; align-items: flex-start; gap: 7px; margin-bottom: 10px; padding: 9px; border: 1px solid #69403a; border-radius: 6px; background: #2a1d19; color: #e5a196; font-size: 9px; line-height: 1.4; }
 .error-message svg { flex: 0 0 auto; }
+.error-message span { flex: 1; }
+.error-message button { border: 0; background: transparent; color: currentColor; cursor: pointer; }
 .convert-button { display: flex; width: 100%; height: 41px; align-items: center; justify-content: center; gap: 8px; font-size: 11px; }
 .export-row { display: grid; grid-template-columns: repeat(4,1fr); gap: 7px; margin-top: 8px; }
 .export-row button { display: flex; height: 35px; align-items: center; justify-content: center; gap: 7px; border: 1px solid #3c4238; border-radius: 6px; background: #20241d; color: #aab1a3; font-size: 9px; font-weight: 750; cursor: pointer; }
@@ -246,5 +249,6 @@ button { color: inherit; }
   .empty-state h1 { font-size: 37px; }
   .feature-row { gap: 9px; flex-wrap: wrap; justify-content: center; }
   .editor-toolbar { max-width: calc(100% - 24px); }
+  .editor-toolbar { overflow-x: auto; scrollbar-width: none; }
   .editor-toolbar button { padding: 0 6px; }
 }

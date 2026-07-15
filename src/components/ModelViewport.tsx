@@ -246,6 +246,7 @@ export function ModelViewport({
 }: Props) {
   return (
     <Canvas
+      aria-label={mode === 'voxel' ? 'Interactive voxel model preview' : 'Interactive source model preview'}
       dpr={[1, 1.8]}
       camera={{ position: [4.6, 3.2, 4.8], fov: 38, near: 0.01, far: 1000 }}
       gl={{ antialias: true, alpha: true }}

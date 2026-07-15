@@ -1,0 +1,15 @@
+{
+  "name": "VoxelMill",
+  "short_name": "VoxelMill",
+  "description": "Convert textured GLB models into editable, palette-aware voxel art.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#11130f",
+  "theme_color": "#11130f",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ],
+  "file_handlers": [
+    { "action": "/", "accept": { "application/x-voxelmill-project": [".voxelmill"] } }
+  ]
+}
