@@ -6,7 +6,7 @@ Every push and pull request runs unit tests, frontend and AI Worker TypeScript, 
 
 1. Run `npm run check` and `npm run test:e2e`.
 2. Run the private GLB identity gate with `VOXEL_TEST_ASSET_DIR` when the authorized corpus is present.
-3. Verify the representative rocket visually: coherent geometry, stable regional colors, 96-color palette, and no browser errors.
+3. Verify the representative rocket visually: coherent geometry, stable regional colors, 20-color default palette, and no browser errors.
 4. Push `main`; the deploy job publishes the rate-limited `voxelmill-ai` Worker and then consumes the verified frontend artifact for Cloudflare Pages. `npm run deploy:all` is the manual recovery path.
 5. Check `https://api.voxelmill.com/health`, the immutable Pages URL, `https://voxelmill.com/`, `www` redirect, manifest, service worker, MIME types, and security headers. A real palette generation is a manual release smoke because it invokes billed Workers AI inference.
 

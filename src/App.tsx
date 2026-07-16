@@ -69,8 +69,8 @@ const ModelViewport = lazy(() => import('./components/ModelViewport').then((modu
 const AiPaletteStudio = lazy(() => import('./components/AiPaletteStudio').then((module) => ({ default: module.AiPaletteStudio })));
 
 const DEFAULT_OPTIONS: VoxelizeOptions = {
-  resolution: 64,
-  paletteSize: 96,
+  resolution: 80,
+  paletteSize: 20,
   fillMode: 'solid',
   alphaThreshold: 0.1,
   samplingQuality: 'balanced',

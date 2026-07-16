@@ -30,6 +30,8 @@ test('loads a project and exposes keyboard-accessible editing tools', async ({ p
   await page.goto('/');
   await expect(page).toHaveTitle(/VoxelMill/);
   await expect(page.getByRole('button', { name: /Open file/i })).toBeVisible();
+  await expect(page.getByLabel('Resolution')).toHaveValue('80');
+  await expect(page.getByLabel('Palette size')).toHaveValue('20');
   await openProject(page);
 
   const select = page.getByRole('button', { name: 'Select voxels' });
