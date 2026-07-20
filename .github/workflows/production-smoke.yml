@@ -26,4 +26,4 @@ jobs:
       - name: Check AI service without invoking a billed model
         run: |
           curl --fail --silent --show-error --max-time 20 https://api.voxelmill.com/health --output ai-health.json
-          node -e "const fs=require('fs'); const h=JSON.parse(fs.readFileSync('ai-health.json')); if(!h.ok||h.service!=='voxelmill-ai') process.exit(1)"
+          node -e "const fs=require('fs'); const h=JSON.parse(fs.readFileSync('ai-health.json')); if(!h.ok||h.service!=='voxelmill-ai'||h.paletteEnabled!==false) process.exit(1)"

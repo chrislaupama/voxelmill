@@ -17,6 +17,13 @@ function remapPalette(model: VoxelModel, order: number[]): VoxelModel {
 }
 
 export function compactPalette(model: VoxelModel): VoxelModel {
+  if (!model.voxels.length) {
+    if (model.palette.length === 1) return model;
+    return {
+      ...model,
+      palette: [model.palette[0] ?? { r: 0, g: 0, b: 0 }],
+    };
+  }
   const used = new Set(model.voxels.map((voxel) => voxel.colorIndex));
   const order = model.palette.map((_, index) => index).filter((index) => used.has(index));
   return order.length === model.palette.length ? model : remapPalette(model, order);

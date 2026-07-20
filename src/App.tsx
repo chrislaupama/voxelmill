@@ -32,13 +32,13 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import {
   addVoxels,
   brushCoordinates,
-  buildMirrorPreview,
+  buildMirrorPlan,
   floodFillVoxels,
-  mirrorModel,
   paintVoxels,
   removeVoxels,
   rotateVoxels,
   translateVoxels,
+  voxelLineCoordinates,
 } from './lib/editVoxels';
 import { decodeVoxelMillProject, downloadVoxelMillProject } from './lib/projectFormat';
 import { loadAutosave, saveAutosave, type RecoveredProject } from './lib/projectStore';
@@ -47,6 +47,14 @@ import type { PaletteRemapPlan } from './lib/paletteRemap';
 import { downloadQb } from './lib/qbExport';
 import { applyVoxelPatch, createVoxelPatch, voxelPatchHasChanges, type VoxelPatch } from './lib/voxelHistory';
 import { packVoxelCoordinate } from './lib/voxelIndex';
+import {
+  growSelection,
+  invertSelection,
+  selectConnected,
+  selectSameColor,
+  selectSlice,
+  shrinkSelection,
+} from './lib/voxelSelection';
 import { isConversionCancelled, voxelizeGlbInWorker } from './lib/voxelizeWorker';
 import { downloadVox } from './lib/voxExport';
 import type {
@@ -54,6 +62,7 @@ import type {
   FillMode,
   MaterialColorMode,
   MirrorAxis,
+  MirrorScope,
   MirrorSettings,
   ProgressUpdate,
   RGB,
@@ -76,6 +85,14 @@ const DEFAULT_OPTIONS: VoxelizeOptions = {
   samplingQuality: 'balanced',
   materialColorMode: 'baseColor',
 };
+
+const sameOptions = (left: VoxelizeOptions | null, right: VoxelizeOptions) => Boolean(left
+  && left.resolution === right.resolution
+  && left.paletteSize === right.paletteSize
+  && left.fillMode === right.fillMode
+  && left.alphaThreshold === right.alphaThreshold
+  && left.samplingQuality === right.samplingQuality
+  && left.materialColorMode === right.materialColorMode);
 
 const formatBytes = (bytes: number) => {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -104,10 +121,10 @@ const TOOL_LABELS: Record<EditorTool, string> = {
 
 const TOOL_INSTRUCTIONS: Record<Exclude<EditorTool, 'mirror'>, string> = {
   orbit: 'Choose an editing tool, then click directly on the model.',
-  select: 'Click voxels to add or remove them from the current selection.',
-  add: 'Click a voxel face to place voxels beside it.',
-  remove: 'Click a voxel to erase it with the current brush.',
-  paint: 'Click a voxel to recolor it with the current brush.',
+  select: 'Click or drag across voxels to add or remove them from the current selection.',
+  add: 'Click or drag across voxel faces to place voxels beside them.',
+  remove: 'Click or drag across voxels to erase them with the current brush.',
+  paint: 'Click or drag across voxels to recolor them with the current brush.',
   fill: 'Click a voxel to recolor its connected color region.',
   eyedropper: 'Click a voxel to make its color the active paint color.',
 };
@@ -136,9 +153,18 @@ function App() {
   const sourceFileRef = useRef<File | null>(null);
   const conversionControllerRef = useRef<AbortController | null>(null);
   const developmentFixtureRef = useRef<string | null>(null);
+  const autosaveGenerationRef = useRef(0);
+  const voxelStrokeRef = useRef<{
+    base: VoxelModel;
+    current: VoxelModel;
+    lastCenter: VoxelCoordinate | null;
+  } | null>(null);
+  const selectionStrokeRef = useRef<Set<number>>(new Set());
   const [source, setSource] = useState<SourceModel | null>(null);
   const [voxelModel, setVoxelModel] = useState<VoxelModel | null>(null);
   const [options, setOptions] = useState(DEFAULT_OPTIONS);
+  const [builtOptions, setBuiltOptions] = useState<VoxelizeOptions | null>(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [previewMode, setPreviewMode] = useState<'source' | 'voxel'>('source');
   const [showGrid, setShowGrid] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -163,22 +189,28 @@ function App() {
     direction: 'negativeToPositive',
     plane: 1,
   });
+  const [mirrorScope, setMirrorScope] = useState<MirrorScope>('side');
   const [history, setHistory] = useState<{ past: VoxelPatch[]; future: VoxelPatch[] }>({ past: [], future: [] });
   const [aiStudioOpen, setAiStudioOpen] = useState(false);
   const [aiPreview, setAiPreview] = useState<{ base: VoxelModel; plan: PaletteRemapPlan } | null>(null);
 
-  const mirrorPreview = useMemo(
-    () => voxelModel && tool === 'mirror' ? buildMirrorPreview(voxelModel, mirrorSettings) : [],
-    [mirrorSettings, tool, voxelModel],
-  );
   const selectedVoxels = useMemo(
     () => voxelModel ? voxelModel.voxels.filter((voxel) => selection.has(packVoxelCoordinate(voxel))) : [],
     [selection, voxelModel],
   );
+  const mirrorPlan = useMemo(
+    () => voxelModel && tool === 'mirror'
+      ? buildMirrorPlan(voxelModel, mirrorSettings, selectedVoxels, mirrorScope)
+      : null,
+    [mirrorScope, mirrorSettings, selectedVoxels, tool, voxelModel],
+  );
+  const needsRebuild = Boolean(source && builtOptions && !sameOptions(builtOptions, options));
 
-  const adoptVoxelModel = useCallback((result: VoxelModel) => {
+  const adoptVoxelModel = useCallback((result: VoxelModel, settings: VoxelizeOptions, dirty = false) => {
     setAiPreview(null);
     setVoxelModel(result);
+    setBuiltOptions(settings);
+    setHasUnsavedChanges(dirty);
     setHistory({ past: [], future: [] });
     setSelection(new Set());
     setTool('orbit');
@@ -193,9 +225,22 @@ function App() {
       direction: 'negativeToPositive',
       plane: Math.max(1, Math.floor(result.size.x / 2)),
     });
+    setMirrorScope('side');
     setSlice({ enabled: false, axis: 'z', index: Math.max(0, Math.floor(result.size.z / 2)) });
     setPreviewMode('voxel');
   }, []);
+
+  const preserveCurrentBeforeReplacement = useCallback(async (message: string) => {
+    if (!voxelModel || !hasUnsavedChanges) return true;
+    if (!window.confirm(message)) return false;
+    const savedAt = await saveAutosave({ model: voxelModel, options: builtOptions ?? options });
+    if (savedAt !== null) {
+      setAutosaveState('saved');
+      setRecovery({ project: { model: voxelModel, options: builtOptions ?? options }, savedAt });
+      return true;
+    }
+    return window.confirm('VoxelMill could not update local recovery storage. Continue and replace the current model anyway?');
+  }, [builtOptions, hasUnsavedChanges, options, voxelModel]);
 
   const convert = useCallback(
     async (file: File, settings = options) => {
@@ -208,7 +253,7 @@ function App() {
       setPreviewMode('source');
       try {
         const result = await voxelizeGlbInWorker(file, settings, setProgress, controller.signal);
-        adoptVoxelModel(result);
+        adoptVoxelModel(result, settings, true);
       } catch (conversionError) {
         if (isConversionCancelled(conversionError)) {
           setProgress({ progress: 0, label: 'Conversion cancelled' });
@@ -230,21 +275,45 @@ function App() {
     async (file: File | undefined) => {
       if (!file || busy) return;
       const lowerName = file.name.toLowerCase();
-      if (!lowerName.endsWith('.glb') && !lowerName.endsWith('.voxelmill')) {
-        setError('Please choose a self-contained .glb or .voxelmill project file.');
+      if (!lowerName.endsWith('.glb') && !lowerName.endsWith('.vox') && !lowerName.endsWith('.voxelmill')) {
+        setError('Please choose a self-contained .glb, MagicaVoxel .vox, or .voxelmill project file.');
         return;
       }
+      if (!await preserveCurrentBeforeReplacement('Replace the current model? VoxelMill will update local recovery first; download a project file for a portable copy.')) return;
       setBusy(true);
       setError(null);
-      setProgress({ progress: 0.02, label: lowerName.endsWith('.voxelmill') ? 'Opening VoxelMill project' : 'Opening GLB model' });
+      setProgress({
+        progress: 0.02,
+        label: lowerName.endsWith('.voxelmill')
+          ? 'Opening VoxelMill project'
+          : lowerName.endsWith('.vox')
+            ? 'Opening MagicaVoxel model'
+            : 'Opening GLB model',
+      });
       try {
         if (lowerName.endsWith('.voxelmill')) {
           const project = decodeVoxelMillProject(await file.arrayBuffer());
           sourceFileRef.current = null;
           setSource(null);
           setOptions(project.options);
-          adoptVoxelModel(project.model);
+          adoptVoxelModel(project.model, project.options);
           setProgress({ progress: 1, label: 'VoxelMill project ready' });
+          setBusy(false);
+          return;
+        }
+        if (lowerName.endsWith('.vox')) {
+          const { decodeVox } = await import('./lib/voxImport');
+          const model = decodeVox(await file.arrayBuffer(), file.name);
+          const importedOptions: VoxelizeOptions = {
+            ...DEFAULT_OPTIONS,
+            resolution: Math.max(24, Math.min(128, Math.max(model.size.x, model.size.y, model.size.z))),
+            paletteSize: Math.max(8, Math.min(255, model.palette.length)),
+          };
+          sourceFileRef.current = null;
+          setSource(null);
+          setOptions(importedOptions);
+          adoptVoxelModel(model, importedOptions);
+          setProgress({ progress: 1, label: 'MagicaVoxel model ready' });
           setBusy(false);
           return;
         }
@@ -259,7 +328,7 @@ function App() {
         setBusy(false);
       }
     },
-    [adoptVoxelModel, busy, convert],
+    [adoptVoxelModel, busy, convert, preserveCurrentBeforeReplacement],
   );
 
   useEffect(() => {
@@ -274,22 +343,36 @@ function App() {
 
   useEffect(() => {
     if (!voxelModel) return;
+    const generation = ++autosaveGenerationRef.current;
+    const savedOptions = builtOptions ?? options;
     setAutosaveState('saving');
     const timer = window.setTimeout(() => {
-      void saveAutosave({ model: voxelModel, options }).then((savedAt) => {
+      void saveAutosave({ model: voxelModel, options: savedOptions }).then((savedAt) => {
+        if (autosaveGenerationRef.current !== generation) return;
         setAutosaveState(savedAt === null ? 'unavailable' : 'saved');
-        if (savedAt !== null) setRecovery({ project: { model: voxelModel, options }, savedAt });
-      }).catch(() => setAutosaveState('unavailable'));
+        if (savedAt !== null) setRecovery({ project: { model: voxelModel, options: savedOptions }, savedAt });
+      }).catch(() => {
+        if (autosaveGenerationRef.current === generation) setAutosaveState('unavailable');
+      });
     }, 800);
     return () => window.clearTimeout(timer);
-  }, [options, voxelModel]);
+  }, [builtOptions, options, voxelModel]);
+
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+    };
+    window.addEventListener('beforeunload', warnBeforeUnload);
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload);
+  }, [hasUnsavedChanges]);
 
   const recoverAutosave = useCallback(() => {
     if (!recovery) return;
     sourceFileRef.current = null;
     setSource(null);
     setOptions(recovery.project.options);
-    adoptVoxelModel(recovery.project.model);
+    adoptVoxelModel(recovery.project.model, recovery.project.options, true);
     setError(null);
   }, [adoptVoxelModel, recovery]);
 
@@ -314,6 +397,17 @@ function App() {
     setOptions((current) => ({ ...current, [key]: value }));
   };
 
+  const clampEditorPlanes = useCallback((next: VoxelModel) => {
+    setSlice((current) => ({
+      ...current,
+      index: Math.min(Math.max(0, next.size[current.axis] - 1), Math.max(0, current.index)),
+    }));
+    setMirrorSettings((current) => ({
+      ...current,
+      plane: Math.min(next.size[current.axis], Math.max(0, Math.round(current.plane))),
+    }));
+  }, []);
+
   const commitEdit = useCallback((next: VoxelModel) => {
     if (!voxelModel || next === voxelModel) return;
     const patch = createVoxelPatch(voxelModel, next);
@@ -321,25 +415,33 @@ function App() {
     setHistory((current) => ({ past: [...current.past, patch].slice(-100), future: [] }));
     setAiPreview(null);
     setVoxelModel(next);
-  }, [voxelModel]);
+    clampEditorPlanes(next);
+    setHasUnsavedChanges(true);
+  }, [clampEditorPlanes, voxelModel]);
 
   const undo = useCallback(() => {
     if (!voxelModel || !history.past.length) return;
     const patch = history.past[history.past.length - 1];
     setHistory({ past: history.past.slice(0, -1), future: [patch, ...history.future].slice(0, 100) });
     setAiPreview(null);
-    setVoxelModel(applyVoxelPatch(voxelModel, patch, 'undo'));
+    const next = applyVoxelPatch(voxelModel, patch, 'undo');
+    setVoxelModel(next);
+    clampEditorPlanes(next);
     setSelection(new Set());
-  }, [history, voxelModel]);
+    setHasUnsavedChanges(true);
+  }, [clampEditorPlanes, history, voxelModel]);
 
   const redo = useCallback(() => {
     if (!voxelModel || !history.future.length) return;
     const patch = history.future[0];
     setHistory({ past: [...history.past, patch].slice(-100), future: history.future.slice(1) });
     setAiPreview(null);
-    setVoxelModel(applyVoxelPatch(voxelModel, patch, 'redo'));
+    const next = applyVoxelPatch(voxelModel, patch, 'redo');
+    setVoxelModel(next);
+    clampEditorPlanes(next);
     setSelection(new Set());
-  }, [history, voxelModel]);
+    setHasUnsavedChanges(true);
+  }, [clampEditorPlanes, history, voxelModel]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -362,6 +464,7 @@ function App() {
       if (shortcutTool) {
         event.preventDefault();
         setPreviewMode('voxel');
+        if (shortcutTool === 'mirror') setMirrorScope(selectedVoxels.length ? 'selection' : 'side');
         setTool(shortcutTool);
       } else if (key === 'g') {
         event.preventDefault();
@@ -384,13 +487,17 @@ function App() {
   const activateTool = (nextTool: EditorTool) => {
     if (!voxelModel) return;
     setPreviewMode('voxel');
+    if (nextTool === 'mirror') setMirrorScope(selectedVoxels.length ? 'selection' : 'side');
     setTool(nextTool);
   };
 
-  const handleVoxelAction = (voxel: Voxel, normal: VoxelCoordinate) => {
+  const handleVoxelAction = (voxel: Voxel, normal: VoxelCoordinate, phase: 'start' | 'continue') => {
     if (!voxelModel) return;
     if (tool === 'select') {
       const key = packVoxelCoordinate(voxel);
+      if (phase === 'start') selectionStrokeRef.current.clear();
+      if (selectionStrokeRef.current.has(key)) return;
+      selectionStrokeRef.current.add(key);
       setSelection((current) => {
         const next = new Set(current);
         if (next.has(key)) next.delete(key); else next.add(key);
@@ -399,25 +506,92 @@ function App() {
       return;
     }
     if (tool === 'eyedropper') {
+      if (phase !== 'start') return;
       selectPaletteColor({ r: voxel.r, g: voxel.g, b: voxel.b }, voxel.colorIndex);
       return;
     }
     if (tool === 'fill') {
+      if (phase !== 'start') return;
       commitEdit(floodFillVoxels(voxelModel, voxel, selectedColor));
       return;
     }
-    if (tool === 'add') {
-      const target = {
-        x: voxel.x + normal.x,
-        y: voxel.y + normal.y,
-        z: voxel.z + normal.z,
-      };
-      commitEdit(addVoxels(voxelModel, brushCoordinates(target, brushRadius, undefined, brushShape), selectedColor));
-    } else if (tool === 'remove') {
-      commitEdit(removeVoxels(voxelModel, brushCoordinates(voxel, brushRadius, voxelModel.size, brushShape)));
-    } else if (tool === 'paint') {
-      commitEdit(paintVoxels(voxelModel, brushCoordinates(voxel, brushRadius, voxelModel.size, brushShape), selectedColor));
+    if (tool !== 'add' && tool !== 'remove' && tool !== 'paint') return;
+    if (phase === 'start' || !voxelStrokeRef.current) {
+      voxelStrokeRef.current = { base: voxelModel, current: voxelModel, lastCenter: null };
     }
+    const current = voxelStrokeRef.current.current;
+    let next = current;
+    const center = tool === 'add' ? {
+      x: voxel.x + normal.x,
+      y: voxel.y + normal.y,
+      z: voxel.z + normal.z,
+    } : { x: voxel.x, y: voxel.y, z: voxel.z };
+    const centers = voxelStrokeRef.current.lastCenter
+      ? voxelLineCoordinates(voxelStrokeRef.current.lastCenter, center)
+      : [center];
+    voxelStrokeRef.current.lastCenter = center;
+    const coordinates = centers.flatMap((coordinate) => brushCoordinates(
+      coordinate,
+      brushRadius,
+      tool === 'add' ? undefined : current.size,
+      brushShape,
+    ));
+    if (tool === 'add') {
+      const shift = coordinates.reduce((currentShift, coordinate) => ({
+        x: Math.max(currentShift.x, -Math.min(0, coordinate.x)),
+        y: Math.max(currentShift.y, -Math.min(0, coordinate.y)),
+        z: Math.max(currentShift.z, -Math.min(0, coordinate.z)),
+      }), { x: 0, y: 0, z: 0 });
+      next = addVoxels(current, coordinates, selectedColor);
+      if (next !== current && (shift.x || shift.y || shift.z)) {
+        // addVoxels shifts the existing grid to keep coordinates non-negative.
+        // Clear coordinate-keyed selection and shift the editor's grid planes too.
+        setSelection(new Set());
+        setSlice((currentSlice) => ({
+          ...currentSlice,
+          index: currentSlice.index + shift[currentSlice.axis],
+        }));
+        setMirrorSettings((currentMirror) => ({
+          ...currentMirror,
+          plane: currentMirror.plane + shift[currentMirror.axis],
+        }));
+        if (voxelStrokeRef.current?.lastCenter) {
+          voxelStrokeRef.current.lastCenter = {
+            x: voxelStrokeRef.current.lastCenter.x + shift.x,
+            y: voxelStrokeRef.current.lastCenter.y + shift.y,
+            z: voxelStrokeRef.current.lastCenter.z + shift.z,
+          };
+        }
+      }
+    } else if (tool === 'remove') {
+      next = removeVoxels(current, coordinates);
+      if (next !== current) {
+        const removed = new Set(coordinates.map(packVoxelCoordinate));
+        setSelection((currentSelection) => {
+          if (![...removed].some((key) => currentSelection.has(key))) return currentSelection;
+          return new Set([...currentSelection].filter((key) => !removed.has(key)));
+        });
+      }
+    } else if (tool === 'paint') {
+      next = paintVoxels(current, coordinates, selectedColor);
+    }
+    if (next !== current) {
+      voxelStrokeRef.current.current = next;
+      setAiPreview(null);
+      setVoxelModel(next);
+      setHasUnsavedChanges(true);
+    }
+  };
+
+  const finishVoxelAction = () => {
+    selectionStrokeRef.current.clear();
+    const stroke = voxelStrokeRef.current;
+    voxelStrokeRef.current = null;
+    if (!stroke || stroke.current === stroke.base) return;
+    const patch = createVoxelPatch(stroke.base, stroke.current);
+    if (!voxelPatchHasChanges(patch)) return;
+    setHistory((current) => ({ past: [...current.past, patch].slice(-100), future: [] }));
+    setHasUnsavedChanges(true);
   };
 
   const selectPaletteColor = (color: RGB, index: number | null = null) => {
@@ -449,7 +623,8 @@ function App() {
   const previewAiPalette = useCallback((base: VoxelModel, preview: PaletteRemapPlan | null) => {
     setPreviewMode('voxel');
     setTool('orbit');
-    setAiPreview((current) => preview ? { base, plan: preview } : current?.base === base ? null : current);
+    const visiblePreview = preview?.metrics.changedVoxels ? preview : null;
+    setAiPreview((current) => visiblePreview ? { base, plan: visiblePreview } : current?.base === base ? null : current);
   }, []);
 
   const applyAiPalette = useCallback((base: VoxelModel, result: VoxelModel) => {
@@ -574,18 +749,21 @@ function App() {
                   showGrid={showGrid}
                   tool={aiPreview ? 'orbit' : tool}
                   mirrorSettings={mirrorSettings}
-                  mirrorPreview={aiPreview ? [] : mirrorPreview}
+                  mirrorPlan={aiPreview ? null : mirrorPlan}
                   selectedVoxels={aiPreview ? [] : selectedVoxels}
                   palettePreview={aiPreview?.plan}
                   slice={slice}
+                  brushRadius={brushRadius}
+                  brushShape={brushShape}
                   onVoxelAction={handleVoxelAction}
+                  onVoxelActionEnd={finishVoxelAction}
                 />
               </Suspense>
               <div className="view-hint">
                 {aiPreview
-                  ? 'AI PALETTE PREVIEW · CHOOSE CURRENT OR CANDIDATE IN THE STUDIO'
+                  ? 'PALETTE PREVIEW · CHOOSE CURRENT OR CANDIDATE IN THE STUDIO'
                   : previewMode === 'voxel' && tool !== 'orbit'
-                  ? tool === 'mirror' ? 'GHOST VOXELS SHOW THE MIRRORED RESULT · DRAG TO ORBIT' : `CLICK A VOXEL TO ${TOOL_LABELS[tool].toUpperCase()} · DRAG TO ORBIT`
+                  ? tool === 'mirror' ? 'GREEN ADDS · AMBER REPLACES · RED CLEARS · DRAG TO ORBIT' : `CLICK OR DRAG TO ${TOOL_LABELS[tool].toUpperCase()} · PRESS Q TO ORBIT`
                   : 'DRAG TO ORBIT · SCROLL TO ZOOM · RIGHT-DRAG TO PAN'}
               </div>
               {busy ? (
@@ -621,7 +799,7 @@ function App() {
                 and exports a MagicaVoxel-ready file.
               </p>
               <button className="primary large" type="button" onClick={() => inputRef.current?.click()}>
-                <Upload size={18} /> Open GLB or project
+                <Upload size={18} /> Open GLB, VOX, or project
               </button>
               {recovery ? (
                 <button className="compact-upload" type="button" onClick={recoverAutosave}>
@@ -639,7 +817,7 @@ function App() {
           {dragging ? (
             <div className="drop-overlay">
               <Upload size={38} />
-              <strong>Drop GLB or VoxelMill project</strong>
+              <strong>Drop GLB, VOX, or VoxelMill project</strong>
             </div>
           ) : null}
         </section>
@@ -664,7 +842,7 @@ function App() {
                   <div className="file-icon"><Save size={21} /></div>
                   <div className="file-copy">
                     <strong title={voxelModel.sourceName}>{voxelModel.sourceName}</strong>
-                    <span>VoxelMill project · {voxelModel.voxels.length.toLocaleString()} voxels</span>
+                    <span>{voxelModel.sourceName.toLowerCase().endsWith('.vox') ? 'MagicaVoxel model' : 'VoxelMill project'} · {voxelModel.voxels.length.toLocaleString()} voxels</span>
                   </div>
                   <button type="button" onClick={() => inputRef.current?.click()} disabled={busy} title="Open another file">
                     <RefreshCw size={15} />
@@ -672,7 +850,7 @@ function App() {
                 </div>
               ) : (
                 <button className="compact-upload" type="button" onClick={() => inputRef.current?.click()}>
-                  <Upload size={17} /> Select GLB or project
+                  <Upload size={17} /> Select GLB, VOX, or project
                 </button>
               )}
               {source ? (
@@ -687,7 +865,7 @@ function App() {
             <section className="panel-section">
               <div className="section-title">
                 <div><SlidersHorizontal size={16} /> VOXEL SETTINGS</div>
-                <span>LIVE</span>
+                <span>{needsRebuild ? 'REBUILD NEEDED' : source ? 'CURRENT' : 'SOURCE REQUIRED'}</span>
               </div>
               <label className="control-label" htmlFor="resolution">
                 <span>Resolution</span>
@@ -701,7 +879,7 @@ function App() {
                 max="128"
                 step="8"
                 value={options.resolution}
-                disabled={busy}
+                disabled={busy || !source}
                 onChange={(event) => updateOption('resolution', Number(event.target.value))}
               />
               <div className="range-scale"><span>24</span><span>Balanced</span><span>128</span></div>
@@ -719,7 +897,7 @@ function App() {
                 max="255"
                 step="1"
                 value={options.paletteSize}
-                disabled={busy}
+                disabled={busy || !source}
                 onChange={(event) => updateOption('paletteSize', Number(event.target.value))}
               />
               <div className="range-scale"><span>8</span><span>Stylized</span><span>255</span></div>
@@ -732,7 +910,7 @@ function App() {
                     key={mode}
                     className={options.fillMode === mode ? 'active' : ''}
                     onClick={() => updateOption('fillMode', mode)}
-                    disabled={busy}
+                    disabled={busy || !source}
                   >
                     {mode === 'solid' ? <Cuboid size={17} /> : <Layers3 size={17} />}
                     <span><strong>{mode === 'solid' ? 'Solid' : 'Surface'}</strong><small>{mode === 'solid' ? 'Fill interior' : 'Hollow shell'}</small></span>
@@ -741,7 +919,10 @@ function App() {
                 ))}
               </div>
 
-              <button className="advanced-toggle" type="button" onClick={() => setAdvancedOpen((value) => !value)}>
+              {needsRebuild ? <p className="control-help">Settings changed. Rebuild the voxel model to apply them.</p> : null}
+              {!source && voxelModel ? <p className="control-help">Open the original GLB to rebuild this saved project with different settings.</p> : null}
+
+              <button className="advanced-toggle" type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((value) => !value)}>
                 Advanced
                 <ChevronDown className={advancedOpen ? 'rotated' : ''} size={15} />
               </button>
@@ -752,7 +933,7 @@ function App() {
                     <select
                       id="sampling-quality"
                       value={options.samplingQuality}
-                      disabled={busy}
+                      disabled={busy || !source}
                       onChange={(event) => updateOption('samplingQuality', event.target.value as SamplingQuality)}
                     >
                       <option value="draft">Draft</option>
@@ -765,7 +946,7 @@ function App() {
                     <select
                       id="material-color-mode"
                       value={options.materialColorMode}
-                      disabled={busy}
+                      disabled={busy || !source}
                       onChange={(event) => updateOption('materialColorMode', event.target.value as MaterialColorMode)}
                     >
                       <option value="baseColor">Base color</option>
@@ -784,7 +965,7 @@ function App() {
                     max="0.9"
                     step="0.05"
                     value={options.alphaThreshold}
-                    disabled={busy}
+                    disabled={busy || !source}
                     onChange={(event) => updateOption('alphaThreshold', Number(event.target.value))}
                   />
                 </div>
@@ -794,15 +975,15 @@ function App() {
             {voxelModel ? (
               <section className="panel-section ai-panel-section">
                 <div className="section-title">
-                  <div><Sparkles size={16} /> AI PALETTE STUDIO</div>
-                  <span>OPT-IN</span>
+                  <div><Palette size={16} /> PALETTE STUDIO</div>
+                  <span>LOCAL BY DEFAULT</span>
                 </div>
-                {!aiStudioOpen ? <p className="ai-panel-intro">Describe an art direction, compare three coherent palette concepts on the model, then apply one as a single undoable edit.</p> : null}
+                {!aiStudioOpen ? <p className="ai-panel-intro">Build a coherent palette from a reference image entirely on-device, or explicitly opt into AI art direction. Preview every mapping before applying it.</p> : null}
                 <button
                   className={aiStudioOpen ? 'advanced-toggle ai-close-toggle' : 'compact-upload ai-open-button'}
                   type="button"
                   aria-expanded={aiStudioOpen}
-                  aria-controls="ai-palette-studio"
+                  aria-controls="palette-studio"
                   onClick={() => {
                     setAiStudioOpen((open) => !open);
                     setAiPreview(null);
@@ -810,10 +991,10 @@ function App() {
                     setTool('orbit');
                   }}
                 >
-                  {aiStudioOpen ? <>Close studio <ChevronDown className="rotated" size={15} /></> : <><Sparkles size={15} /> Open AI Palette Studio</>}
+                  {aiStudioOpen ? <>Close studio <ChevronDown className="rotated" size={15} /></> : <><Palette size={15} /> Open Palette Studio</>}
                 </button>
                 {aiStudioOpen ? (
-                  <div id="ai-palette-studio">
+                  <div id="palette-studio">
                     <Suspense fallback={<div className="ai-component-loading"><LoaderCircle className="spin" size={16} /> Loading Palette Studio…</div>}>
                       <AiPaletteStudio
                         model={voxelModel}
@@ -840,12 +1021,37 @@ function App() {
                     <div className="editor-instruction">
                       {TOOL_INSTRUCTIONS[tool]}
                     </div>
+                    {!voxelModel.voxels.length ? (
+                      <button
+                        className="primary empty-model-seed"
+                        type="button"
+                        onClick={() => {
+                          commitEdit(addVoxels(voxelModel, [{ x: 0, y: 0, z: 0 }], selectedColor));
+                          setTool('add');
+                        }}
+                      >
+                        <Plus size={15} /> Place voxel at origin
+                      </button>
+                    ) : null}
                     {tool === 'select' ? (
                       <div className="editor-subsection">
                         <div className="control-label"><span>Selection</span><output>{selectedVoxels.length.toLocaleString()}</output></div>
                         <div className="compact-actions">
-                          <button type="button" onClick={() => setSelection(new Set(voxelModel.voxels.map(packVoxelCoordinate)))}>Select all</button>
+                          <button type="button" onClick={() => setSelection(slice.enabled
+                            ? selectSlice(voxelModel, slice.axis, slice.index)
+                            : new Set(voxelModel.voxels.map(packVoxelCoordinate)))}>{slice.enabled ? 'Select layer' : 'Select all'}</button>
+                          <button type="button" onClick={() => setSelection(invertSelection(voxelModel, selection))}>Invert</button>
                           <button type="button" onClick={() => setSelection(new Set())} disabled={!selectedVoxels.length}>Clear</button>
+                        </div>
+                        <div className="compact-actions">
+                          <button type="button" disabled={!selectedVoxels.length} onClick={() => selectedVoxels[0] && setSelection(selectConnected(voxelModel, selectedVoxels[0]))}>Connected</button>
+                          <button type="button" disabled={!selectedVoxels.length} onClick={() => selectedVoxels[0] && setSelection(selectConnected(voxelModel, selectedVoxels[0], true))}>Connected color</button>
+                          <button type="button" disabled={!selectedVoxels.length} onClick={() => selectedVoxels[0] && setSelection(selectSameColor(voxelModel, selectedVoxels[0]))}>Same color</button>
+                        </div>
+                        <div className="compact-actions">
+                          <button type="button" disabled={!selectedVoxels.length} onClick={() => setSelection(growSelection(voxelModel, selection))}>Grow</button>
+                          <button type="button" disabled={!selectedVoxels.length} onClick={() => setSelection(shrinkSelection(voxelModel, selection))}>Shrink</button>
+                          <button type="button" disabled={!selectedVoxels.length} onClick={() => { commitEdit(removeVoxels(voxelModel, selectedVoxels)); setSelection(new Set()); }}>Delete</button>
                         </div>
                         <div className="control-label"><span>Move selection</span></div>
                         <div className="transform-grid">
@@ -951,10 +1157,33 @@ function App() {
                   <div className="mirror-controls">
                     <div className="mirror-preview-note">
                       <FlipHorizontal2 size={16} />
-                      <span><strong>Live mirror preview</strong><small>{mirrorPreview.length.toLocaleString()} destination voxels shown in green</small></span>
+                      <span>
+                        <strong>Live mirror preview</strong>
+                        <small>{(mirrorPlan?.source.length ?? 0).toLocaleString()} source voxels · {((mirrorPlan?.additions.length ?? 0) + (mirrorPlan?.overwrites.length ?? 0)).toLocaleString()} destinations</small>
+                      </span>
+                    </div>
+                    <div className="mirror-legend" aria-label="Mirror preview legend">
+                      <span><i className="add" />{(mirrorPlan?.additions.length ?? 0).toLocaleString()} add</span>
+                      <span><i className="overwrite" />{(mirrorPlan?.overwrites.length ?? 0).toLocaleString()} replace</span>
+                      <span><i className="remove" />{(mirrorPlan?.removals.length ?? 0).toLocaleString()} clear</span>
                     </div>
 
-                    <div className="control-label"><span>Mirror axis</span></div>
+                    <div className="control-label mirror-scope-label"><span>Mirror source</span></div>
+                    <div className="mirror-scope-selector">
+                      <button
+                        className={mirrorScope === 'selection' ? 'active' : ''}
+                        type="button"
+                        disabled={!selectedVoxels.length}
+                        onClick={() => setMirrorScope('selection')}
+                      >
+                        Selection <small>{selectedVoxels.length.toLocaleString()}</small>
+                      </button>
+                      <button className={mirrorScope === 'side' ? 'active' : ''} type="button" onClick={() => setMirrorScope('side')}>
+                        Entire side
+                      </button>
+                    </div>
+
+                    <div className="control-label mirror-axis-label"><span>Mirror axis</span></div>
                     <div className="axis-selector">
                       {(['x', 'y', 'z'] as MirrorAxis[]).map((axis) => (
                         <button className={mirrorSettings.axis === axis ? 'active' : ''} type="button" key={axis} onClick={() => setMirrorAxis(axis)}>
@@ -963,54 +1192,103 @@ function App() {
                       ))}
                     </div>
 
-                    <div className="control-label mirror-direction-label"><span>Copy direction</span></div>
-                    <div className="direction-selector">
-                      <button
-                        className={mirrorSettings.direction === 'negativeToPositive' ? 'active' : ''}
-                        type="button"
-                        onClick={() => setMirrorSettings((current) => ({ ...current, direction: 'negativeToPositive' }))}
-                      >
-                        <span>− {mirrorSettings.axis.toUpperCase()}</span><strong>→</strong><span>+ {mirrorSettings.axis.toUpperCase()}</span>
-                      </button>
-                      <button
-                        className={mirrorSettings.direction === 'positiveToNegative' ? 'active' : ''}
-                        type="button"
-                        onClick={() => setMirrorSettings((current) => ({ ...current, direction: 'positiveToNegative' }))}
-                      >
-                        <span>+ {mirrorSettings.axis.toUpperCase()}</span><strong>→</strong><span>− {mirrorSettings.axis.toUpperCase()}</span>
-                      </button>
-                    </div>
+                    {mirrorScope === 'side' ? <>
+                      <div className="control-label mirror-direction-label"><span>Copy direction</span></div>
+                      <div className="direction-selector">
+                        <button
+                          className={mirrorSettings.direction === 'negativeToPositive' ? 'active' : ''}
+                          type="button"
+                          onClick={() => setMirrorSettings((current) => ({ ...current, direction: 'negativeToPositive' }))}
+                        >
+                          <span>− {mirrorSettings.axis.toUpperCase()}</span><strong>→</strong><span>+ {mirrorSettings.axis.toUpperCase()}</span>
+                        </button>
+                        <button
+                          className={mirrorSettings.direction === 'positiveToNegative' ? 'active' : ''}
+                          type="button"
+                          onClick={() => setMirrorSettings((current) => ({ ...current, direction: 'positiveToNegative' }))}
+                        >
+                          <span>+ {mirrorSettings.axis.toUpperCase()}</span><strong>→</strong><span>− {mirrorSettings.axis.toUpperCase()}</span>
+                        </button>
+                      </div>
+                    </> : <p className="control-help mirror-selection-help">Only the selected voxels are copied. Everything else stays in place.</p>}
 
                     <label className="control-label mirror-plane-label" htmlFor="mirror-plane">
                       <span>Mirror plane</span>
-                      <output>{mirrorSettings.axis.toUpperCase()} {mirrorSettings.plane}</output>
+                      <output>{mirrorSettings.axis.toUpperCase()} boundary {mirrorSettings.plane}</output>
                     </label>
-                    <input
-                      id="mirror-plane"
-                      className="range mirror-range"
-                      type="range"
-                      min="1"
-                      max={Math.max(1, voxelModel.size[mirrorSettings.axis] - 1)}
-                      step="1"
-                      value={Math.min(mirrorSettings.plane, Math.max(1, voxelModel.size[mirrorSettings.axis] - 1))}
-                      disabled={voxelModel.size[mirrorSettings.axis] <= 1}
-                      onChange={(event) => setMirrorSettings((current) => ({ ...current, plane: Number(event.target.value) }))}
-                    />
-                    <div className="range-scale"><span>1</span><span>Drag the green plane</span><span>{Math.max(1, voxelModel.size[mirrorSettings.axis] - 1)}</span></div>
-                    <p className="control-help">The destination side is replaced when you apply the mirror.</p>
+                    <div className="mirror-plane-inputs">
+                      <input
+                        id="mirror-plane"
+                        className="range mirror-range"
+                        type="range"
+                        min="0"
+                        max={voxelModel.size[mirrorSettings.axis]}
+                        step="1"
+                        value={Math.min(voxelModel.size[mirrorSettings.axis], Math.max(0, mirrorSettings.plane))}
+                        onChange={(event) => setMirrorSettings((current) => ({ ...current, plane: Math.round(Number(event.target.value)) }))}
+                      />
+                      <input
+                        className="mirror-plane-number"
+                        aria-label="Mirror plane boundary"
+                        type="number"
+                        min="0"
+                        max={voxelModel.size[mirrorSettings.axis]}
+                        step="1"
+                        value={Math.min(voxelModel.size[mirrorSettings.axis], Math.max(0, mirrorSettings.plane))}
+                        onChange={(event) => setMirrorSettings((current) => ({
+                          ...current,
+                          plane: Math.min(voxelModel.size[current.axis], Math.max(0, Math.round(Number(event.target.value)))),
+                        }))}
+                      />
+                    </div>
+                    <div className="range-scale"><span>0</span><span>Use slider or exact value</span><span>{voxelModel.size[mirrorSettings.axis]}</span></div>
+                    <p className="control-help">
+                      {mirrorScope === 'side'
+                        ? 'The chosen source half is copied and unmatched voxels on the destination half are cleared.'
+                        : 'The plane sits between voxel cells; edge values can mirror the selection beyond the current grid.'}
+                    </p>
+                    {mirrorPlan && (mirrorPlan.outputSize.x !== voxelModel.size.x || mirrorPlan.outputSize.y !== voxelModel.size.y || mirrorPlan.outputSize.z !== voxelModel.size.z) ? (
+                      <p className="mirror-bounds-note">
+                        Grid becomes {mirrorPlan.outputSize.x} × {mirrorPlan.outputSize.y} × {mirrorPlan.outputSize.z}
+                        {mirrorPlan.shift.x || mirrorPlan.shift.y || mirrorPlan.shift.z
+                          ? ` · existing voxels shift +${mirrorPlan.shift.x}, +${mirrorPlan.shift.y}, +${mirrorPlan.shift.z}`
+                          : ''}
+                      </p>
+                    ) : null}
+                    {mirrorPlan?.error ? <p className="mirror-error" role="alert">{mirrorPlan.error}</p> : null}
 
                     <div className="mirror-actions">
                       <button className="secondary-action" type="button" onClick={() => activateTool('orbit')}>Cancel</button>
                       <button
                         className="primary"
                         type="button"
-                        disabled={!mirrorPreview.length}
+                        disabled={!mirrorPlan?.valid || !(mirrorPlan.additions.length + mirrorPlan.overwrites.length + mirrorPlan.removals.length)}
                         onClick={() => {
-                          commitEdit(mirrorModel(voxelModel, mirrorSettings));
+                          if (!mirrorPlan?.valid) return;
+                          commitEdit(mirrorPlan.model);
+                          if (mirrorPlan.shift.x || mirrorPlan.shift.y || mirrorPlan.shift.z) {
+                            setSlice((current) => ({
+                              ...current,
+                              index: Math.min(
+                                Math.max(0, mirrorPlan.model.size[current.axis] - 1),
+                                Math.max(0, current.index + mirrorPlan.shift[current.axis]),
+                              ),
+                            }));
+                            setMirrorSettings((current) => ({
+                              ...current,
+                              plane: Math.min(
+                                mirrorPlan.model.size[current.axis],
+                                Math.max(0, current.plane + mirrorPlan.shift[current.axis]),
+                              ),
+                            }));
+                          }
+                          setSelection(mirrorScope === 'selection'
+                            ? new Set(mirrorPlan.destinations.map(packVoxelCoordinate))
+                            : new Set());
                           setTool('orbit');
                         }}
                       >
-                        <FlipHorizontal2 size={15} /> Apply mirror
+                        <FlipHorizontal2 size={15} /> Apply {((mirrorPlan?.additions.length ?? 0) + (mirrorPlan?.overwrites.length ?? 0) + (mirrorPlan?.removals.length ?? 0)).toLocaleString()} changes
                       </button>
                     </div>
                   </div>
@@ -1043,11 +1321,18 @@ function App() {
               disabled={!source || (busy && !canCancel)}
               onClick={() => {
                 if (busy) conversionControllerRef.current?.abort();
-                else if (sourceFileRef.current) void convert(sourceFileRef.current);
+                else if (sourceFileRef.current) {
+                  const sourceFile = sourceFileRef.current;
+                  void preserveCurrentBeforeReplacement('Rebuild and replace the current voxel model? VoxelMill will update local recovery first; download a project file for a portable copy.')
+                    .then((canReplace) => {
+                      if (canReplace) return convert(sourceFile, options);
+                      return undefined;
+                    });
+                }
               }}
             >
               {busy ? canCancel ? <CircleStop size={17} /> : <LoaderCircle className="spin" size={17} /> : <Cuboid size={17} />}
-              {busy ? canCancel ? 'Cancel conversion' : 'Opening model…' : voxelModel ? 'Rebuild voxel model' : 'Voxelize model'}
+              {busy ? canCancel ? 'Cancel conversion' : 'Opening model…' : voxelModel ? needsRebuild ? 'Apply settings & rebuild' : 'Rebuild voxel model' : 'Voxelize model'}
             </button>
             <div className="export-row">
               <button type="button" disabled={!voxelModel || busy} onClick={() => voxelModel && downloadVox(voxelModel)}>
@@ -1056,14 +1341,28 @@ function App() {
               <button type="button" disabled={!voxelModel || busy} onClick={() => voxelModel && downloadQb(voxelModel)} title="Export full-color Qubicle Binary">
                 <Download size={16} /> .QB
               </button>
-              <button type="button" disabled={!voxelModel || busy} onClick={() => voxelModel && downloadVoxelMillProject({ model: voxelModel, options })}>
+              <button type="button" disabled={!voxelModel || busy} onClick={() => {
+                if (!voxelModel) return;
+                const model = voxelModel;
+                setError(null);
+                void import('./lib/glbExport')
+                  .then(({ downloadGlb }) => downloadGlb(model))
+                  .catch((exportError: unknown) => setError(exportError instanceof Error ? exportError.message : 'The GLB could not be exported.'));
+              }} title="Export a game-engine-ready greedy-meshed voxel GLB">
+                <Download size={16} /> .GLB
+              </button>
+              <button type="button" disabled={!voxelModel || busy} onClick={() => {
+                if (!voxelModel) return;
+                downloadVoxelMillProject({ model: voxelModel, options: builtOptions ?? options });
+                setHasUnsavedChanges(false);
+              }}>
                 <Save size={16} /> Project
               </button>
               <button type="button" disabled={!voxelModel || busy} onClick={() => voxelModel && downloadPalette(voxelModel)} title="Export palette PNG">
                 <ImageIcon size={16} /> Palette
               </button>
             </div>
-            <div className="format-note"><Palette size={13} /> {autosaveState === 'saving' ? 'Saving locally…' : autosaveState === 'saved' ? 'Autosaved locally' : autosaveState === 'unavailable' ? 'Autosave unavailable' : 'Local-first project storage'}</div>
+            <div className="format-note"><Palette size={13} /> {autosaveState === 'saving' ? 'Saving locally…' : autosaveState === 'saved' ? hasUnsavedChanges ? 'Autosaved locally · project file not downloaded' : 'Project downloaded · autosaved locally' : autosaveState === 'unavailable' ? 'Autosave unavailable' : 'Local-first project storage'}</div>
           </div>
         </aside>
       </main>
@@ -1072,7 +1371,7 @@ function App() {
         ref={inputRef}
         hidden
         type="file"
-        accept=".glb,.voxelmill,model/gltf-binary,application/x-voxelmill-project"
+        accept=".glb,.vox,.voxelmill,model/gltf-binary,application/x-vox,application/x-voxelmill-project"
         onChange={(event) => {
           void receiveFile(event.target.files?.[0]);
           event.target.value = '';

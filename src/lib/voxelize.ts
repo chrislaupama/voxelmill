@@ -1,10 +1,10 @@
 import {
   Box3,
   Color,
+  InstancedMesh,
   Mesh,
   MeshStandardMaterial,
   SRGBColorSpace,
-  SkinnedMesh,
   Triangle,
   Vector2,
   Vector3,
@@ -19,7 +19,13 @@ interface AccumulatedColor {
   r: number;
   g: number;
   b: number;
-  count: number;
+  weight: number;
+}
+
+interface LinearColor {
+  r: number;
+  g: number;
+  b: number;
 }
 
 interface TexturePixels {
@@ -36,6 +42,7 @@ const workingUv = new Vector2();
 const barycentric = new Vector3();
 const closest = new Vector3();
 const sampleProbe = new Vector3();
+const triangleNormal = new Vector3();
 const cellBox = new Box3();
 const center = new Vector3();
 const BALANCED_COLOR_PROBES = [
@@ -48,6 +55,7 @@ const HIGH_COLOR_PROBES = [
   [0.5, 0, 0.5], [0.5, 1, 0.5],
   [0.5, 0.5, 0], [0.5, 0.5, 1],
 ] as const;
+const EMPTY_PALETTE_INDEX = 0xffff;
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
@@ -109,10 +117,13 @@ function sampleTexture(texture: Texture, uv: Vector2): [number, number, number, 
   const ty = pixelY - y0;
   const result = [0, 0, 0, 0] as [number, number, number, number];
   for (let channel = 0; channel < 4; channel += 1) {
-    const topLeft = pixels.data[(y0 * pixels.width + x0) * 4 + channel];
-    const topRight = pixels.data[(y0 * pixels.width + x1) * 4 + channel];
-    const bottomLeft = pixels.data[(y1 * pixels.width + x0) * 4 + channel];
-    const bottomRight = pixels.data[(y1 * pixels.width + x1) * 4 + channel];
+    const decode = channel < 3 && texture.colorSpace === SRGBColorSpace
+      ? srgbToLinear
+      : (value: number) => value / 255;
+    const topLeft = decode(pixels.data[(y0 * pixels.width + x0) * 4 + channel]);
+    const topRight = decode(pixels.data[(y0 * pixels.width + x1) * 4 + channel]);
+    const bottomLeft = decode(pixels.data[(y1 * pixels.width + x0) * 4 + channel]);
+    const bottomRight = decode(pixels.data[(y1 * pixels.width + x1) * 4 + channel]);
     const top = topLeft + (topRight - topLeft) * tx;
     const bottom = bottomLeft + (bottomRight - bottomLeft) * tx;
     result[channel] = top + (bottom - top) * ty;
@@ -138,7 +149,7 @@ function sampleColor(
   cIndex: number,
   weights: Vector3,
   materialColorMode: MaterialColorMode,
-): { color: RGB; alpha: number } {
+): { color: LinearColor; alpha: number } {
   const coloredMaterial = material as Material & {
     color?: Color;
     map?: Texture;
@@ -147,7 +158,14 @@ function sampleColor(
     emissive?: Color;
     emissiveMap?: Texture;
     emissiveIntensity?: number;
+    transparent?: boolean;
+    alphaTest?: number;
   };
+  // glTF OPAQUE materials ignore base-color, texture, and vertex alpha. In
+  // Three.js, GLTFLoader represents MASK with alphaTest and BLEND with
+  // transparent=true, so only those modes use alpha for voxel occupancy.
+  const usesAlphaCoverage = coloredMaterial.transparent === true || (coloredMaterial.alphaTest ?? 0) > 0;
+  let alpha = usesAlphaCoverage ? (coloredMaterial.opacity ?? 1) * 255 : 255;
   let r = 1;
   let g = 1;
   let b = 1;
@@ -167,9 +185,15 @@ function sampleColor(
     r *= workingVertexColor.r;
     g *= workingVertexColor.g;
     b *= workingVertexColor.b;
+    if (usesAlphaCoverage && colorAttribute.itemSize >= 4) {
+      alpha *= (
+        colorAttribute.getW(aIndex) * weights.x
+        + colorAttribute.getW(bIndex) * weights.y
+        + colorAttribute.getW(cIndex) * weights.z
+      );
+    }
   }
 
-  let alpha = (coloredMaterial.opacity ?? 1) * 255;
   if (coloredMaterial.map && uvAttribute) {
     const uv = new Vector2(
       uvAttribute.getX(aIndex) * weights.x + uvAttribute.getX(bIndex) * weights.y + uvAttribute.getX(cIndex) * weights.z,
@@ -177,11 +201,10 @@ function sampleColor(
     );
     const texel = sampleTexture(coloredMaterial.map, uv);
     if (texel) {
-      const textureIsSrgb = coloredMaterial.map.colorSpace === SRGBColorSpace;
-      r *= textureIsSrgb ? srgbToLinear(texel[0]) : texel[0] / 255;
-      g *= textureIsSrgb ? srgbToLinear(texel[1]) : texel[1] / 255;
-      b *= textureIsSrgb ? srgbToLinear(texel[2]) : texel[2] / 255;
-      alpha *= texel[3] / 255;
+      r *= texel[0];
+      g *= texel[1];
+      b *= texel[2];
+      if (usesAlphaCoverage) alpha *= texel[3];
     }
   }
 
@@ -197,10 +220,9 @@ function sampleColor(
       );
       const texel = sampleTexture(coloredMaterial.emissiveMap, uv);
       if (texel) {
-        const textureIsSrgb = coloredMaterial.emissiveMap.colorSpace === SRGBColorSpace;
-        emissiveR *= textureIsSrgb ? srgbToLinear(texel[0]) : texel[0] / 255;
-        emissiveG *= textureIsSrgb ? srgbToLinear(texel[1]) : texel[1] / 255;
-        emissiveB *= textureIsSrgb ? srgbToLinear(texel[2]) : texel[2] / 255;
+        emissiveR *= texel[0];
+        emissiveG *= texel[1];
+        emissiveB *= texel[2];
       }
     }
     r += emissiveR;
@@ -208,7 +230,7 @@ function sampleColor(
     b += emissiveB;
   }
   return {
-    color: { r: linearToSrgb(r), g: linearToSrgb(g), b: linearToSrgb(b) },
+    color: { r, g, b },
     alpha,
   };
 }
@@ -230,9 +252,10 @@ function samplePointColor(
 }
 
 function vertexWorldPosition(mesh: Mesh, vertexIndex: number, target: Vector3) {
-  const position = mesh.geometry.attributes.position;
-  target.fromBufferAttribute(position, vertexIndex);
-  if (mesh instanceof SkinnedMesh) mesh.applyBoneTransform(vertexIndex, target);
+  // Mesh.getVertexPosition() applies the active morph-target weights, and its
+  // SkinnedMesh override additionally applies bone transforms. Reading the raw
+  // position attribute here silently voxelized the bind/base pose instead.
+  mesh.getVertexPosition(vertexIndex, target);
   target.applyMatrix4(mesh.matrixWorld);
 }
 
@@ -332,6 +355,112 @@ function solidFill(
   }
 }
 
+/**
+ * Removes only strongly enclosed, unsupported surface-color speckles.
+ *
+ * The pass is deliberately synchronous and conservative: a voxel is changed
+ * only when it has no face-adjacent surface neighbor of its own color, one
+ * unique replacement color has at least 80% support, and that color brackets
+ * the voxel on two axes. Connected one-voxel-wide stripes therefore retain
+ * their color, while an isolated palette assignment in a flat patch is
+ * corrected without altering geometry or the palette itself.
+ */
+export function stabilizeSurfacePaletteIndices(
+  state: Uint8Array,
+  colorIndices: Uint16Array,
+  sx: number,
+  sy: number,
+  sz: number,
+): Uint16Array {
+  const stabilized = colorIndices.slice();
+  const strides = [1, sx, sx * sy] as const;
+  const coordinates = [
+    (index: number) => index % sx,
+    (index: number) => Math.floor(index / sx) % sy,
+    (index: number) => Math.floor(index / (sx * sy)),
+  ] as const;
+  const limits = [sx, sy, sz] as const;
+  const neighborColors = new Uint16Array(6);
+
+  for (let index = 0; index < state.length; index += 1) {
+    if (state[index] !== 1) continue;
+    const current = colorIndices[index];
+    if (current === EMPTY_PALETTE_INDEX) continue;
+
+    let surfaceNeighborCount = 0;
+    let currentSupport = 0;
+    for (let axis = 0; axis < 3; axis += 1) {
+      const coordinate = coordinates[axis](index);
+      const stride = strides[axis];
+      for (const direction of [-1, 1] as const) {
+        if ((direction < 0 && coordinate === 0) || (direction > 0 && coordinate === limits[axis] - 1)) continue;
+        const neighbor = index + direction * stride;
+        if (state[neighbor] !== 1) continue;
+        const neighborColor = colorIndices[neighbor];
+        if (neighborColor === EMPTY_PALETTE_INDEX) continue;
+        neighborColors[surfaceNeighborCount] = neighborColor;
+        surfaceNeighborCount += 1;
+        if (neighborColor === current) currentSupport += 1;
+      }
+    }
+
+    // Any face-connected continuation may be an intentional thin accent or
+    // edge, so it is protected even when another color is locally dominant.
+    if (currentSupport > 0 || surfaceNeighborCount < 4) continue;
+
+    let candidate = EMPTY_PALETTE_INDEX;
+    let candidateSupport = 0;
+    let hasTie = false;
+    for (let neighborIndex = 0; neighborIndex < surfaceNeighborCount; neighborIndex += 1) {
+      const neighborColor = neighborColors[neighborIndex];
+      if (neighborColor === current) continue;
+      let alreadyCounted = false;
+      for (let earlier = 0; earlier < neighborIndex; earlier += 1) {
+        if (neighborColors[earlier] === neighborColor) {
+          alreadyCounted = true;
+          break;
+        }
+      }
+      if (alreadyCounted) continue;
+      let support = 1;
+      for (let later = neighborIndex + 1; later < surfaceNeighborCount; later += 1) {
+        if (neighborColors[later] === neighborColor) support += 1;
+      }
+      if (support > candidateSupport) {
+        candidate = neighborColor;
+        candidateSupport = support;
+        hasTie = false;
+      } else if (support === candidateSupport) {
+        hasTie = true;
+      }
+    }
+    if (
+      candidate === EMPTY_PALETTE_INDEX
+      || hasTie
+      || candidateSupport < 4
+      || candidateSupport * 5 < surfaceNeighborCount * 4
+    ) continue;
+
+    let bracketingAxes = 0;
+    for (let axis = 0; axis < 3; axis += 1) {
+      const coordinate = coordinates[axis](index);
+      if (coordinate === 0 || coordinate === limits[axis] - 1) continue;
+      const stride = strides[axis];
+      const before = index - stride;
+      const after = index + stride;
+      if (
+        state[before] === 1
+        && state[after] === 1
+        && colorIndices[before] === candidate
+        && colorIndices[after] === candidate
+      ) bracketingAxes += 1;
+    }
+    if (bracketingAxes >= 2) stabilized[index] = candidate;
+  }
+
+  return stabilized;
+}
+
 const nextFrame = () => new Promise<void>((resolve) => {
   if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve());
   else setTimeout(resolve, 0);
@@ -343,7 +472,22 @@ export async function voxelizeModel(
   onProgress: ProgressCallback,
 ): Promise<VoxelModel> {
   source.scene.updateMatrixWorld(true);
-  const bounds = new Box3().setFromObject(source.scene);
+  let hasVisibleInstancedMesh = false;
+  source.scene.traverse((object) => {
+    if (object instanceof InstancedMesh && object.visible && object.count > 0) {
+      hasVisibleInstancedMesh = true;
+    }
+  });
+  if (hasVisibleInstancedMesh) {
+    throw new Error(
+      'Instanced meshes are not supported yet. Expand the instances into regular meshes before voxelizing.',
+    );
+  }
+
+  // Precise bounds use Mesh.getVertexPosition(), so the selected resolution is
+  // spent on the current morph/skinning pose instead of the union of every
+  // possible morph target or a transformed geometry AABB.
+  const bounds = new Box3().setFromObject(source.scene, true);
   if (bounds.isEmpty()) throw new Error('The GLB does not contain any visible geometry.');
   const extent = bounds.getSize(new Vector3());
   const maxExtent = Math.max(extent.x, extent.y, extent.z);
@@ -380,14 +524,35 @@ export async function voxelizeModel(
       vertexWorldPosition(mesh, aIndex, triangle.a);
       vertexWorldPosition(mesh, bIndex, triangle.b);
       vertexWorldPosition(mesh, cIndex, triangle.c);
+      const triangleArea = triangle.getArea();
+      if (!Number.isFinite(triangleArea) || triangleArea <= Number.EPSILON) continue;
+      // Weight a cell contribution by surface area so a patch split into many
+      // tiny triangles cannot overwhelm an adjacent, coarser patch. The cap
+      // prevents one large triangle from claiming more than roughly one cell's
+      // maximum planar cross-section in every cell it touches.
+      triangle.getNormal(triangleNormal);
+      const dominantNormal = Math.max(
+        Math.abs(triangleNormal.x),
+        Math.abs(triangleNormal.y),
+        Math.abs(triangleNormal.z),
+      );
+      // The largest possible intersection between this triangle's plane and a
+      // voxel depends on its orientation. Using sqrt(3) for every triangle
+      // overweights large axis-aligned triangles relative to an equivalently
+      // sized, finely tessellated surface once exact boundary cells are used.
+      const maximumCellSurfaceArea = voxelSize * voxelSize / Math.max(dominantNormal, Number.EPSILON);
+      const contributionWeight = Math.min(triangleArea, maximumCellSurfaceArea);
       triangleBounds.setFromPoints([triangle.a, triangle.b, triangle.c]);
 
       const minX = clamp(Math.floor((triangleBounds.min.x - origin.x) / voxelSize), 0, sx - 1);
       const minY = clamp(Math.floor((triangleBounds.min.y - origin.y) / voxelSize), 0, sy - 1);
       const minZ = clamp(Math.floor((triangleBounds.min.z - origin.z) / voxelSize), 0, sz - 1);
-      const maxX = clamp(Math.floor((triangleBounds.max.x - origin.x) / voxelSize), 0, sx - 1);
-      const maxY = clamp(Math.floor((triangleBounds.max.y - origin.y) / voxelSize), 0, sy - 1);
-      const maxZ = clamp(Math.floor((triangleBounds.max.z - origin.z) / voxelSize), 0, sz - 1);
+      // Cell intervals are half-open. A triangle maximum exactly on a grid
+      // boundary belongs to the cell below that boundary; floor(max) scanned
+      // and colored an additional cell on the positive axis.
+      const maxX = Math.max(minX, clamp(Math.ceil((triangleBounds.max.x - origin.x) / voxelSize) - 1, 0, sx - 1));
+      const maxY = Math.max(minY, clamp(Math.ceil((triangleBounds.max.y - origin.y) / voxelSize) - 1, 0, sy - 1));
+      const maxZ = Math.max(minZ, clamp(Math.ceil((triangleBounds.max.z - origin.z) / voxelSize) - 1, 0, sz - 1));
       const material = materialAt(mesh, elementOffset);
       if (!material.visible) continue;
       const texture = (material as Material & { map?: Texture }).map;
@@ -416,37 +581,51 @@ export async function voxelizeModel(
             if (!cellBox.intersectsTriangle(triangle)) continue;
             cellBox.getCenter(center);
             triangle.closestPointToPoint(center, closest);
-            let sampled = samplePointColor(
-              triangle,
-              closest,
-              material,
-              uv,
-              emissiveUv,
-              colorAttribute,
-              aIndex,
-              bIndex,
-              cIndex,
-              options.materialColorMode,
-            );
+            let sampled: ReturnType<typeof samplePointColor>;
             let sampleR = 0;
             let sampleG = 0;
             let sampleB = 0;
             let sampleCount = 0;
-            if (sampled.alpha >= alphaThreshold) {
-              sampleR += sampled.color.r;
-              sampleG += sampled.color.g;
-              sampleB += sampled.color.b;
-              sampleCount += 1;
+            // The nearest point on a triangle is not necessarily inside an
+            // intersected voxel. Sampling that outside point is especially
+            // damaging with UV atlases: it borrows an unrelated texel and
+            // produces isolated color noise.
+            if (cellBox.containsPoint(closest)) {
+              sampled = samplePointColor(
+                triangle,
+                closest,
+                material,
+                uv,
+                emissiveUv,
+                colorAttribute,
+                aIndex,
+                bIndex,
+                cIndex,
+                options.materialColorMode,
+              );
+              if (sampled.alpha >= alphaThreshold) {
+                sampleR += sampled.color.r;
+                sampleG += sampled.color.g;
+                sampleB += sampled.color.b;
+                sampleCount += 1;
+              }
             }
 
             // Project the cell's eight corners onto the triangle. This approximates the
             // texture area covered by the voxel and prevents single-texel aliasing.
-            if (colorProbes.length && (
+            const hasSpatiallyVaryingColor = (
               (texture && uv)
               || (options.materialColorMode === 'appearance' && emissiveTexture && emissiveUv)
               || ((material as Material & { vertexColors?: boolean }).vertexColors && colorAttribute)
-            )) {
-              for (const probe of colorProbes) {
+            );
+            // Draft normally uses only the center. If that projection was
+            // outside the cell (or transparent), fall back to the balanced
+            // probes and accept only a valid in-cell sample.
+            const probes = options.samplingQuality === 'draft'
+              ? sampleCount === 0 ? BALANCED_COLOR_PROBES : []
+              : hasSpatiallyVaryingColor || sampleCount === 0 ? colorProbes : [];
+            if (probes.length) {
+              for (const probe of probes) {
                 sampleProbe.set(
                   cellBox.min.x + (cellBox.max.x - cellBox.min.x) * probe[0],
                   cellBox.min.y + (cellBox.max.y - cellBox.min.y) * probe[1],
@@ -471,6 +650,35 @@ export async function voxelizeModel(
                 sampleG += sampled.color.g;
                 sampleB += sampled.color.b;
                 sampleCount += 1;
+                if (options.samplingQuality === 'draft') break;
+              }
+            }
+            // A very small triangle can intersect a cell without any projected
+            // box corner landing inside it. A contained triangle vertex is an
+            // exact, cell-local final fallback and keeps occupancy independent
+            // of an invalid outside-center sample.
+            if (!sampleCount) {
+              for (let vertexOffset = 0; vertexOffset < 3; vertexOffset += 1) {
+                const vertex = vertexOffset === 0 ? triangle.a : vertexOffset === 1 ? triangle.b : triangle.c;
+                if (!cellBox.containsPoint(vertex)) continue;
+                sampled = samplePointColor(
+                  triangle,
+                  vertex,
+                  material,
+                  uv,
+                  emissiveUv,
+                  colorAttribute,
+                  aIndex,
+                  bIndex,
+                  cIndex,
+                  options.materialColorMode,
+                );
+                if (sampled.alpha < alphaThreshold) continue;
+                sampleR += sampled.color.r;
+                sampleG += sampled.color.g;
+                sampleB += sampled.color.b;
+                sampleCount += 1;
+                if (options.samplingQuality === 'draft') break;
               }
             }
             if (!sampleCount) continue;
@@ -482,12 +690,17 @@ export async function voxelizeModel(
             const key = x + sx * (y + sy * z);
             const value = accumulated.get(key);
             if (value) {
-              value.r += sampledColor.r;
-              value.g += sampledColor.g;
-              value.b += sampledColor.b;
-              value.count += 1;
+              value.r += sampledColor.r * contributionWeight;
+              value.g += sampledColor.g * contributionWeight;
+              value.b += sampledColor.b * contributionWeight;
+              value.weight += contributionWeight;
             } else {
-              accumulated.set(key, { ...sampledColor, count: 1 });
+              accumulated.set(key, {
+                r: sampledColor.r * contributionWeight,
+                g: sampledColor.g * contributionWeight,
+                b: sampledColor.b * contributionWeight,
+                weight: contributionWeight,
+              });
             }
           }
         }
@@ -513,9 +726,9 @@ export async function voxelizeModel(
   const blue = new Uint8Array(totalCells);
   accumulated.forEach((color, index) => {
     state[index] = 1;
-    red[index] = Math.round(color.r / color.count);
-    green[index] = Math.round(color.g / color.count);
-    blue[index] = Math.round(color.b / color.count);
+    red[index] = linearToSrgb(color.r / color.weight);
+    green[index] = linearToSrgb(color.g / color.weight);
+    blue[index] = linearToSrgb(color.b / color.weight);
   });
 
   if (options.fillMode === 'solid') {
@@ -526,30 +739,45 @@ export async function voxelizeModel(
 
   onProgress({ progress: 0.84, label: `Reducing colors to a ${options.paletteSize}-color palette` });
   await nextFrame();
-  const rawColors: RGB[] = [];
+  const surfaceColors: RGB[] = [];
+  const occupiedColors: RGB[] = [];
   for (let i = 0; i < totalCells; i += 1) {
-    if (state[i] === 1 || state[i] === 3) rawColors.push({ r: red[i], g: green[i], b: blue[i] });
+    if (state[i] !== 1 && state[i] !== 3) continue;
+    const color = { r: red[i], g: green[i], b: blue[i] };
+    occupiedColors.push(color);
+    if (state[i] === 1) surfaceColors.push(color);
   }
-  const palette = buildPalette(rawColors, options.paletteSize);
+  // Solid-fill colors are propagated from the shell for visual continuity, but
+  // they are never allowed to vote in palette reduction. Otherwise a large
+  // hidden interior can overwhelm small, visible texture accents.
+  const palette = buildPalette(surfaceColors, options.paletteSize);
   const paletteLookup = new Map<number, number>();
-  const voxels = [];
+  const colorIndices = new Uint16Array(totalCells);
+  colorIndices.fill(EMPTY_PALETTE_INDEX);
   let colorCursor = 0;
-  for (let z = 0; z < sz; z += 1) {
-    for (let y = 0; y < sy; y += 1) {
-      for (let x = 0; x < sx; x += 1) {
-        const cellIndex = x + sx * (y + sy * z);
-        if (state[cellIndex] !== 1 && state[cellIndex] !== 3) continue;
-        const color = rawColors[colorCursor++];
-        const colorKey = (color.r << 16) | (color.g << 8) | color.b;
-        let colorIndex = paletteLookup.get(colorKey);
-        if (colorIndex === undefined) {
-          colorIndex = nearestPaletteIndex(color, palette);
-          paletteLookup.set(colorKey, colorIndex);
-        }
-        const mapped = palette[colorIndex];
-        voxels.push({ x, y, z, ...mapped, colorIndex });
-      }
+  for (let cellIndex = 0; cellIndex < totalCells; cellIndex += 1) {
+    if (state[cellIndex] !== 1 && state[cellIndex] !== 3) continue;
+    const color = occupiedColors[colorCursor++];
+    const colorKey = (color.r << 16) | (color.g << 8) | color.b;
+    let colorIndex = paletteLookup.get(colorKey);
+    if (colorIndex === undefined) {
+      colorIndex = nearestPaletteIndex(color, palette);
+      paletteLookup.set(colorKey, colorIndex);
     }
+    colorIndices[cellIndex] = colorIndex;
+  }
+
+  const stabilizedIndices = stabilizeSurfacePaletteIndices(state, colorIndices, sx, sy, sz);
+  const voxels = [];
+  for (let cellIndex = 0; cellIndex < totalCells; cellIndex += 1) {
+    const colorIndex = stabilizedIndices[cellIndex];
+    if (colorIndex === EMPTY_PALETTE_INDEX) continue;
+    const z = Math.floor(cellIndex / (sx * sy));
+    const remainder = cellIndex - z * sx * sy;
+    const y = Math.floor(remainder / sx);
+    const x = remainder - y * sx;
+    const mapped = palette[colorIndex];
+    voxels.push({ x, y, z, ...mapped, colorIndex });
   }
 
   onProgress({ progress: 1, label: 'Voxel model ready' });

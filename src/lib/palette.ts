@@ -22,7 +22,7 @@ interface WeightedColor extends RGB {
 const paletteLabCache = new WeakMap<RGB[], Lab[]>();
 
 export const srgbToLinear = (value: number) => {
-  const normalized = value > 1 ? value / 255 : value;
+  const normalized = Math.max(0, Math.min(255, value)) / 255;
   return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
 };
 

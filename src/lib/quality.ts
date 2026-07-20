@@ -75,14 +75,15 @@ export function compareOccupancy(actual: Voxel[], expected: Voxel[]): OccupancyM
 
 export function compareVoxelColors(actual: Voxel[], expected: Voxel[]): SpatialColorMetrics {
   const actualByCoordinate = new Map(actual.map((voxel) => [coordinateKey(voxel), voxel]));
+  const expectedByCoordinate = new Map(expected.map((voxel) => [coordinateKey(voxel), voxel]));
   const distances: number[] = [];
-  for (const reference of expected) {
+  for (const reference of expectedByCoordinate.values()) {
     const voxel = actualByCoordinate.get(coordinateKey(reference));
     if (voxel) distances.push(perceptualColorDistance(voxel, reference));
   }
   const distribution = distances.length
     ? summarizeDistances(distances)
-    : expected.length
+    : expectedByCoordinate.size
       ? {
           mean: Number.POSITIVE_INFINITY,
           rootMeanSquare: Number.POSITIVE_INFINITY,
@@ -94,8 +95,10 @@ export function compareVoxelColors(actual: Voxel[], expected: Voxel[]): SpatialC
     ...distribution,
     matched: distances.length,
     actual: actualByCoordinate.size,
-    expected: new Set(expected.map(coordinateKey)).size,
-    coverage: expected.length ? distances.length / new Set(expected.map(coordinateKey)).size : actual.length ? 0 : 1,
+    expected: expectedByCoordinate.size,
+    coverage: expectedByCoordinate.size
+      ? distances.length / expectedByCoordinate.size
+      : actualByCoordinate.size ? 0 : 1,
   };
 }
 
@@ -108,19 +111,33 @@ export function voxelModelFingerprint(model: VoxelModel): string {
     hash ^= value & 0xff;
     hash = Math.imul(hash, 0x01000193) >>> 0;
   };
+  const updateUint16 = (value: number) => {
+    update(value);
+    update(value >>> 8);
+  };
+  const updateUint32 = (value: number) => {
+    update(value);
+    update(value >>> 8);
+    update(value >>> 16);
+    update(value >>> 24);
+  };
   for (const dimension of [model.size.x, model.size.y, model.size.z]) {
-    update(dimension);
-    update(dimension >>> 8);
+    updateUint16(dimension);
   }
+  updateUint16(model.palette.length);
+  updateUint32(model.voxels.length);
+  const voxelSizeBytes = new Uint8Array(8);
+  new DataView(voxelSizeBytes.buffer).setFloat64(0, model.voxelSize, true);
+  for (const byte of voxelSizeBytes) update(byte);
   for (const color of model.palette) {
     update(color.r);
     update(color.g);
     update(color.b);
   }
   for (const voxel of voxels) {
-    update(voxel.x);
-    update(voxel.y);
-    update(voxel.z);
+    updateUint16(voxel.x);
+    updateUint16(voxel.y);
+    updateUint16(voxel.z);
     update(voxel.colorIndex);
   }
   return hash.toString(16).padStart(8, '0');

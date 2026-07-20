@@ -1,6 +1,11 @@
-import type { MirrorSettings, RGB, Voxel, VoxelCoordinate, VoxelModel } from '../types';
+import type { MirrorScope, MirrorSettings, RGB, Voxel, VoxelCoordinate, VoxelModel } from '../types';
 import { nearestPaletteIndex } from './palette';
-import { buildVoxelIndex, packVoxelCoordinate } from './voxelIndex';
+import {
+  buildVoxelIndex,
+  isSupportedVoxelCoordinate,
+  packVoxelCoordinate,
+  VOXEL_COORDINATE_LIMIT,
+} from './voxelIndex';
 
 export const voxelKey = packVoxelCoordinate;
 
@@ -17,6 +22,9 @@ function paletteColor(model: VoxelModel, color: RGB) {
 }
 
 export function addVoxel(model: VoxelModel, coordinate: VoxelCoordinate, color: RGB): VoxelModel {
+  if (!Number.isInteger(coordinate.x)
+    || !Number.isInteger(coordinate.y)
+    || !Number.isInteger(coordinate.z)) return model;
   const shift = {
     x: coordinate.x < 0 ? -coordinate.x : 0,
     y: coordinate.y < 0 ? -coordinate.y : 0,
@@ -32,9 +40,15 @@ export function addVoxel(model: VoxelModel, coordinate: VoxelCoordinate, color: 
     y: Math.max(model.size.y + shift.y, target.y + 1),
     z: Math.max(model.size.z + shift.z, target.z + 1),
   };
+  if (size.x > VOXEL_COORDINATE_LIMIT
+    || size.y > VOXEL_COORDINATE_LIMIT
+    || size.z > VOXEL_COORDINATE_LIMIT) return model;
   const movedVoxels = shift.x || shift.y || shift.z
     ? model.voxels.map((voxel) => ({ ...voxel, x: voxel.x + shift.x, y: voxel.y + shift.y, z: voxel.z + shift.z }))
     : model.voxels;
+  if (!isSupportedVoxelCoordinate(target) || movedVoxels.some((voxel) => !isSupportedVoxelCoordinate(voxel))) {
+    return model;
+  }
   if (buildVoxelIndex(movedVoxels).has(packVoxelCoordinate(target))) {
     return model;
   }
@@ -55,8 +69,7 @@ export function addVoxels(model: VoxelModel, coordinates: VoxelCoordinate[], col
     z: Math.min(current.z, coordinate.z),
   }), { x: 0, y: 0, z: 0 });
   const shift = { x: -minimum.x, y: -minimum.y, z: -minimum.z };
-  const outOfBounds = (coordinate: VoxelCoordinate) => coordinate.x < 0 || coordinate.y < 0 || coordinate.z < 0
-    || coordinate.x >= 1024 || coordinate.y >= 1024 || coordinate.z >= 1024;
+  const outOfBounds = (coordinate: VoxelCoordinate) => !isSupportedVoxelCoordinate(coordinate);
   if (model.voxels.some((voxel) => outOfBounds({ x: voxel.x + shift.x, y: voxel.y + shift.y, z: voxel.z + shift.z }))
     || coordinates.some((coordinate) => outOfBounds({ x: coordinate.x + shift.x, y: coordinate.y + shift.y, z: coordinate.z + shift.z }))) return model;
   const movedVoxels = shift.x || shift.y || shift.z
@@ -79,6 +92,9 @@ export function addVoxels(model: VoxelModel, coordinates: VoxelCoordinate[], col
     y: Math.max(current.y, voxel.y + 1),
     z: Math.max(current.z, voxel.z + 1),
   }), { x: model.size.x + shift.x, y: model.size.y + shift.y, z: model.size.z + shift.z });
+  if (size.x > VOXEL_COORDINATE_LIMIT
+    || size.y > VOXEL_COORDINATE_LIMIT
+    || size.z > VOXEL_COORDINATE_LIMIT) return model;
   return { ...model, size, palette: resolved.palette, voxels: entries };
 }
 
@@ -121,6 +137,33 @@ export function brushCoordinates(
   return coordinates;
 }
 
+export function voxelLineCoordinates(
+  start: VoxelCoordinate,
+  end: VoxelCoordinate,
+): VoxelCoordinate[] {
+  const delta = {
+    x: end.x - start.x,
+    y: end.y - start.y,
+    z: end.z - start.z,
+  };
+  const steps = Math.max(Math.abs(delta.x), Math.abs(delta.y), Math.abs(delta.z));
+  if (steps === 0) return [{ ...start }];
+  const coordinates: VoxelCoordinate[] = [];
+  const visited = new Set<string>();
+  for (let step = 0; step <= steps; step += 1) {
+    const coordinate = {
+      x: Math.round(start.x + delta.x * step / steps),
+      y: Math.round(start.y + delta.y * step / steps),
+      z: Math.round(start.z + delta.z * step / steps),
+    };
+    const key = `${coordinate.x}:${coordinate.y}:${coordinate.z}`;
+    if (visited.has(key)) continue;
+    visited.add(key);
+    coordinates.push(coordinate);
+  }
+  return coordinates;
+}
+
 export function paintVoxels(model: VoxelModel, coordinates: VoxelCoordinate[], color: RGB): VoxelModel {
   if (!coordinates.length) return model;
   const targets = new Set(coordinates.map(packVoxelCoordinate));
@@ -152,7 +195,7 @@ export function floodFillVoxels(model: VoxelModel, start: VoxelCoordinate, color
   for (let cursor = 0; cursor < queue.length; cursor += 1) {
     const voxel = queue[cursor];
     const key = packVoxelCoordinate(voxel);
-    if (visited.has(key) || voxel.colorIndex !== first.colorIndex) continue;
+    if (visited.has(key) || !sameColor(voxel, first)) continue;
     visited.add(key);
     coordinates.push(voxel);
     const neighbors = [
@@ -218,16 +261,17 @@ export function rotateVoxels(
   const selected = new Set(coordinates.map(packVoxelCoordinate));
   const entries = model.voxels.filter((voxel) => selected.has(packVoxelCoordinate(voxel)));
   if (!entries.length) return { model, coordinates: [] };
-  const min = {
-    x: Math.min(...entries.map((voxel) => voxel.x)),
-    y: Math.min(...entries.map((voxel) => voxel.y)),
-    z: Math.min(...entries.map((voxel) => voxel.z)),
-  };
-  const max = {
-    x: Math.max(...entries.map((voxel) => voxel.x)),
-    y: Math.max(...entries.map((voxel) => voxel.y)),
-    z: Math.max(...entries.map((voxel) => voxel.z)),
-  };
+  const min = { x: entries[0].x, y: entries[0].y, z: entries[0].z };
+  const max = { ...min };
+  for (let index = 1; index < entries.length; index += 1) {
+    const voxel = entries[index];
+    min.x = Math.min(min.x, voxel.x);
+    min.y = Math.min(min.y, voxel.y);
+    min.z = Math.min(min.z, voxel.z);
+    max.x = Math.max(max.x, voxel.x);
+    max.y = Math.max(max.y, voxel.y);
+    max.z = Math.max(max.z, voxel.z);
+  }
   const transformed = entries.map((voxel) => {
     if (axis === 'x') return { ...voxel, y: min.y + (voxel.z - min.z), z: min.z + (max.y - voxel.y) };
     if (axis === 'y') return { ...voxel, x: min.x + (voxel.z - min.z), z: min.z + (max.x - voxel.x) };
@@ -251,24 +295,157 @@ const mirroredCoordinate = (voxel: Voxel, settings: MirrorSettings): Voxel => ({
   [settings.axis]: settings.plane * 2 - 1 - axisValue(voxel, settings.axis),
 });
 
-export function buildMirrorPreview(model: VoxelModel, settings: MirrorSettings): Voxel[] {
-  const limit = model.size[settings.axis];
-  const preview = new Map<number, Voxel>();
-  for (const voxel of model.voxels) {
-    if (!isSourceVoxel(voxel, settings)) continue;
-    const mirrored = mirroredCoordinate(voxel, settings);
-    const coordinate = axisValue(mirrored, settings.axis);
-    if (coordinate < 0 || coordinate >= limit) continue;
-    preview.set(voxelKey(mirrored), mirrored);
-  }
-  return [...preview.values()];
+const rawVoxelKey = ({ x, y, z }: VoxelCoordinate) => `${x}:${y}:${z}`;
+
+export interface MirrorPlan {
+  scope: MirrorScope;
+  source: Voxel[];
+  additions: Voxel[];
+  overwrites: Voxel[];
+  removals: Voxel[];
+  destinations: Voxel[];
+  shift: VoxelCoordinate;
+  outputSize: VoxelModel['size'];
+  model: VoxelModel;
+  valid: boolean;
+  error: string | null;
 }
 
-export function mirrorModel(model: VoxelModel, settings: MirrorSettings): VoxelModel {
-  const source = model.voxels.filter((voxel) => isSourceVoxel(voxel, settings));
-  const preview = buildMirrorPreview(model, settings);
+/**
+ * Builds a complete mirror operation without clipping destinations at the current grid bounds.
+ * Preview coordinates stay in the current model's coordinate space so ghosts line up with the
+ * source. The result model is normalized to non-negative coordinates and may grow its grid.
+ */
+export function buildMirrorPlan(
+  model: VoxelModel,
+  settings: MirrorSettings,
+  selectedCoordinates: VoxelCoordinate[] = [],
+  scope: MirrorScope = 'side',
+): MirrorPlan {
+  if (!Number.isSafeInteger(settings.plane)) {
+    return {
+      scope,
+      source: [],
+      additions: [],
+      overwrites: [],
+      removals: [],
+      destinations: [],
+      shift: { x: 0, y: 0, z: 0 },
+      outputSize: model.size,
+      model,
+      valid: false,
+      error: 'The mirror plane must be an integer grid boundary.',
+    };
+  }
+  const selected = new Set(selectedCoordinates.map(packVoxelCoordinate));
+  const source = scope === 'selection'
+    ? model.voxels.filter((voxel) => selected.has(packVoxelCoordinate(voxel)))
+    : model.voxels.filter((voxel) => isSourceVoxel(voxel, settings));
+  const targetsByCoordinate = new Map<string, Voxel>();
+  for (const voxel of source) {
+    const target = mirroredCoordinate(voxel, settings);
+    targetsByCoordinate.set(rawVoxelKey(target), target);
+  }
+  const targets = [...targetsByCoordinate.values()];
+  const originalCoordinates = new Set(model.voxels.map(rawVoxelKey));
+  const additions = targets.filter((voxel) => !originalCoordinates.has(rawVoxelKey(voxel)));
+  const overwrites = targets.filter((voxel) => originalCoordinates.has(rawVoxelKey(voxel)));
+  const destinationCoordinates = new Set(targets.map(rawVoxelKey));
+  const retained = scope === 'selection'
+    ? model.voxels
+    : source;
+  const removals = scope === 'side'
+    ? model.voxels.filter((voxel) => !isSourceVoxel(voxel, settings) && !destinationCoordinates.has(rawVoxelKey(voxel)))
+    : [];
+
+  const minimum = targets.reduce((current, voxel) => ({
+    x: Math.min(current.x, voxel.x),
+    y: Math.min(current.y, voxel.y),
+    z: Math.min(current.z, voxel.z),
+  }), { x: 0, y: 0, z: 0 });
+  const shift = {
+    x: minimum.x < 0 ? -minimum.x : 0,
+    y: minimum.y < 0 ? -minimum.y : 0,
+    z: minimum.z < 0 ? -minimum.z : 0,
+  };
+  const shiftedTargets = targets.map((voxel) => ({
+    ...voxel,
+    x: voxel.x + shift.x,
+    y: voxel.y + shift.y,
+    z: voxel.z + shift.z,
+  }));
+  const outputSize = shiftedTargets.reduce((current, voxel) => ({
+    x: Math.max(current.x, voxel.x + 1),
+    y: Math.max(current.y, voxel.y + 1),
+    z: Math.max(current.z, voxel.z + 1),
+  }), {
+    x: model.size.x + shift.x,
+    y: model.size.y + shift.y,
+    z: model.size.z + shift.z,
+  });
+  const valid = outputSize.x <= VOXEL_COORDINATE_LIMIT
+    && outputSize.y <= VOXEL_COORDINATE_LIMIT
+    && outputSize.z <= VOXEL_COORDINATE_LIMIT;
+  const error = valid
+    ? null
+    : `This mirror would exceed the ${VOXEL_COORDINATE_LIMIT} voxel coordinate limit on at least one axis.`;
+  if (!valid) {
+    return {
+      scope,
+      source,
+      additions,
+      overwrites,
+      removals,
+      destinations: [],
+      shift,
+      outputSize,
+      model,
+      valid,
+      error,
+    };
+  }
+
   const voxels = new Map<number, Voxel>();
-  for (const voxel of source) voxels.set(voxelKey(voxel), voxel);
-  for (const voxel of preview) voxels.set(voxelKey(voxel), voxel);
-  return { ...model, voxels: [...voxels.values()] };
+  for (const voxel of retained) {
+    const shifted = {
+      ...voxel,
+      x: voxel.x + shift.x,
+      y: voxel.y + shift.y,
+      z: voxel.z + shift.z,
+    };
+    voxels.set(packVoxelCoordinate(shifted), shifted);
+  }
+  for (const voxel of shiftedTargets) voxels.set(packVoxelCoordinate(voxel), voxel);
+  return {
+    scope,
+    source,
+    additions,
+    overwrites,
+    removals,
+    destinations: shiftedTargets,
+    shift,
+    outputSize,
+    model: { ...model, size: outputSize, voxels: [...voxels.values()] },
+    valid,
+    error,
+  };
+}
+
+export function buildMirrorPreview(
+  model: VoxelModel,
+  settings: MirrorSettings,
+  selectedCoordinates: VoxelCoordinate[] = [],
+  scope: MirrorScope = 'side',
+): Voxel[] {
+  const plan = buildMirrorPlan(model, settings, selectedCoordinates, scope);
+  return [...plan.additions, ...plan.overwrites];
+}
+
+export function mirrorModel(
+  model: VoxelModel,
+  settings: MirrorSettings,
+  selectedCoordinates: VoxelCoordinate[] = [],
+  scope: MirrorScope = 'side',
+): VoxelModel {
+  return buildMirrorPlan(model, settings, selectedCoordinates, scope).model;
 }

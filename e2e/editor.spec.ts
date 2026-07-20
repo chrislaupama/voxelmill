@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { encodeVoxelMillProject } from '../src/lib/projectFormat';
+import { encodeVox } from '../src/lib/voxExport';
 import type { VoxelMillProject } from '../src/lib/projectFormat';
 
 const fixture: VoxelMillProject = {
@@ -49,10 +50,26 @@ test('keeps an open project when a later file is rejected', async ({ page }) => 
   await page.goto('/');
   await openProject(page);
   await page.locator('input[type=file]').setInputFiles({ name: 'wrong.txt', mimeType: 'text/plain', buffer: Buffer.from('not a model') });
-  await expect(page.getByRole('alert')).toContainText('self-contained .glb or .voxelmill');
+  await expect(page.getByRole('alert')).toContainText('self-contained .glb, MagicaVoxel .vox, or .voxelmill');
   await expect(page.getByText('VOXEL EDITOR')).toBeVisible();
   await page.getByRole('button', { name: 'Dismiss error' }).click({ force: true });
   await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
+test('imports a MagicaVoxel file into the editable local workflow', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('input[type=file]').setInputFiles({
+    name: 'roundtrip.vox',
+    mimeType: 'application/x-vox',
+    buffer: Buffer.from(encodeVox(fixture.model)),
+  });
+
+  await expect(page.getByText('roundtrip.vox', { exact: true })).toBeVisible();
+  await expect(page.getByText(/MagicaVoxel model · 3 voxels/u)).toBeVisible();
+  await expect(page.getByText('VOXEL EDITOR')).toBeVisible();
+  await expect(page.locator('.result-grid strong').nth(1)).toHaveText('3 × 2 × 1');
+  await expect(page.locator('.result-grid strong').last()).toHaveText('2 colors');
+  await expect(page.getByRole('button', { name: /\.GLB/u })).toBeEnabled();
 });
 
 test('publishes installable local-first metadata', async ({ page, request }) => {
@@ -62,6 +79,64 @@ test('publishes installable local-first metadata', async ({ page, request }) => 
   expect(manifest.ok()).toBe(true);
   expect((await manifest.json()).name).toBe('VoxelMill');
   expect(await page.locator('body').getAttribute('data-upload-endpoint')).toBeNull();
+});
+
+test('extracts and applies a reference image palette entirely on-device', async ({ page }) => {
+  await page.goto('/');
+  await openProject(page);
+  const beforePalette = await page.locator('.palette-strip span').evaluateAll((swatches) => (
+    swatches.map((swatch) => getComputedStyle(swatch).backgroundColor)
+  ));
+  await page.getByRole('button', { name: 'Open Palette Studio' }).click();
+  await expect(page.getByRole('button', { name: /Reference image.*no AI.*no bill/i })).toHaveAttribute('aria-pressed', 'true');
+  await page.waitForLoadState('networkidle');
+
+  const networkRequests: string[] = [];
+  page.on('request', (request) => {
+    if (/^https?:/u.test(request.url())) networkRequests.push(`${request.method()} ${request.url()}`);
+  });
+  const pngBytes = await page.evaluate(async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 8;
+    canvas.height = 8;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Canvas unavailable');
+    const colors = ['#152113', '#687431', '#c28a2f', '#f1dfb3'];
+    colors.forEach((color, index) => {
+      context.fillStyle = color;
+      context.fillRect((index % 2) * 4, Math.floor(index / 2) * 4, 4, 4);
+    });
+    const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((result) => (
+      result ? resolve(result) : reject(new Error('PNG encoding failed'))
+    ), 'image/png'));
+    return [...new Uint8Array(await blob.arrayBuffer())];
+  });
+  await page.getByLabel('Reference image file').setInputFiles({
+    name: 'olive-reference.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from(pngBytes),
+  });
+
+  await expect(page.locator('.ai-candidates').getByText('Reference image', { exact: true })).toBeVisible();
+  await expect(page.locator('.ai-candidate-strip i')).toHaveCount(4);
+  await expect(page.getByLabel('Reference extraction diagnostics')).toContainText('4 swatches');
+  await expect(page.getByText('pixels sampled')).toBeVisible();
+  await expect(page.getByText(/decoded, downsampled and reduced to swatches entirely in this browser/i)).toBeVisible();
+  await expect(page.getByText('voxels changed')).toBeVisible();
+  await page.getByText('Inspect source → target mapping').click();
+  await expect(page.locator('.ai-mapping-row')).toHaveCount(2);
+  expect(networkRequests).toEqual([]);
+
+  await page.getByRole('button', { name: 'Apply to model' }).click();
+  const afterPalette = await page.locator('.palette-strip span').evaluateAll((swatches) => (
+    swatches.map((swatch) => getComputedStyle(swatch).backgroundColor)
+  ));
+  expect(afterPalette).not.toEqual(beforePalette);
+  expect(networkRequests).toEqual([]);
+  await page.getByTitle(/Undo/).click();
+  await expect.poll(async () => page.locator('.palette-strip span').evaluateAll((swatches) => (
+    swatches.map((swatch) => getComputedStyle(swatch).backgroundColor)
+  ))).toEqual(beforePalette);
 });
 
 test('previews, applies, and undoes an AI palette without uploading geometry', async ({ page }) => {
@@ -88,7 +163,11 @@ test('previews, applies, and undoes an AI palette without uploading geometry', a
 
   await page.goto('/');
   await openProject(page);
-  await page.getByRole('button', { name: 'Open AI Palette Studio' }).click();
+  const beforePalette = await page.locator('.palette-strip span').evaluateAll((swatches) => (
+    swatches.map((swatch) => getComputedStyle(swatch).backgroundColor)
+  ));
+  await page.getByRole('button', { name: 'Open Palette Studio' }).click();
+  await page.getByRole('button', { name: /Describe with AI.*incur AI usage/i }).click();
   await page.getByLabel('Describe the look').fill('cold arctic sci-fi metal');
   await page.getByRole('button', { name: 'Generate 3 palettes' }).click();
 
@@ -100,7 +179,13 @@ test('previews, applies, and undoes an AI palette without uploading geometry', a
   expect(JSON.stringify(submitted)).not.toMatch(/"x"|"y"|"z"/u);
 
   await page.getByRole('button', { name: 'Apply to model' }).click();
-  await expect(page.locator('.result-grid strong').last()).toHaveText('4 colors');
-  await page.getByTitle(/Undo/).click();
   await expect(page.locator('.result-grid strong').last()).toHaveText('2 colors');
+  const appliedPalette = await page.locator('.palette-strip span').evaluateAll((swatches) => (
+    swatches.map((swatch) => getComputedStyle(swatch).backgroundColor)
+  ));
+  expect(appliedPalette).not.toEqual(beforePalette);
+  await page.getByTitle(/Undo/).click();
+  await expect.poll(async () => page.locator('.palette-strip span').evaluateAll((swatches) => (
+    swatches.map((swatch) => getComputedStyle(swatch).backgroundColor)
+  ))).toEqual(beforePalette);
 });

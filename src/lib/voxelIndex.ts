@@ -1,8 +1,9 @@
 import type { Voxel, VoxelCoordinate } from '../types';
 
 const COORDINATE_BITS = 10;
-const COORDINATE_LIMIT = 1 << COORDINATE_BITS;
-const COORDINATE_MASK = COORDINATE_LIMIT - 1;
+export const VOXEL_COORDINATE_LIMIT = 1 << COORDINATE_BITS;
+export const MAX_VOXEL_COORDINATE = VOXEL_COORDINATE_LIMIT - 1;
+const COORDINATE_MASK = MAX_VOXEL_COORDINATE;
 
 export interface VoxelIndexEntry {
   position: number;
@@ -11,11 +12,15 @@ export interface VoxelIndexEntry {
 
 const cache = new WeakMap<Voxel[], Map<number, VoxelIndexEntry>>();
 
+export function isSupportedVoxelCoordinate({ x, y, z }: VoxelCoordinate): boolean {
+  return Number.isInteger(x) && Number.isInteger(y) && Number.isInteger(z)
+    && x >= 0 && y >= 0 && z >= 0
+    && x < VOXEL_COORDINATE_LIMIT && y < VOXEL_COORDINATE_LIMIT && z < VOXEL_COORDINATE_LIMIT;
+}
+
 export function packVoxelCoordinate({ x, y, z }: VoxelCoordinate): number {
-  if (!Number.isInteger(x) || !Number.isInteger(y) || !Number.isInteger(z)
-    || x < 0 || y < 0 || z < 0
-    || x >= COORDINATE_LIMIT || y >= COORDINATE_LIMIT || z >= COORDINATE_LIMIT) {
-    throw new RangeError(`Voxel coordinates must be integers between 0 and ${COORDINATE_LIMIT - 1}.`);
+  if (!isSupportedVoxelCoordinate({ x, y, z })) {
+    throw new RangeError(`Voxel coordinates must be integers between 0 and ${MAX_VOXEL_COORDINATE}.`);
   }
   return x | (y << COORDINATE_BITS) | (z << (COORDINATE_BITS * 2));
 }

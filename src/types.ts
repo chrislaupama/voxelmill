@@ -6,6 +6,7 @@ export type MaterialColorMode = 'baseColor' | 'appearance';
 export type EditorTool = 'orbit' | 'select' | 'add' | 'remove' | 'paint' | 'fill' | 'eyedropper' | 'mirror';
 export type MirrorAxis = 'x' | 'y' | 'z';
 export type MirrorDirection = 'negativeToPositive' | 'positiveToNegative';
+export type MirrorScope = 'side' | 'selection';
 
 export interface VoxelCoordinate {
   x: number;

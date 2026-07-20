@@ -1,4 +1,5 @@
 import type { RGB, VoxelModel } from '../types';
+import { isSupportedVoxelCoordinate, MAX_VOXEL_COORDINATE, VOXEL_COORDINATE_LIMIT } from './voxelIndex';
 
 const encoder = new TextEncoder();
 
@@ -63,6 +64,28 @@ interface VoxChunk {
 
 function partitionModel(model: VoxelModel): VoxChunk[] {
   const chunks = new Map<string, VoxChunk>();
+  const storedSize = { x: model.size.x, y: model.size.z, z: model.size.y };
+
+  // SIZE is limited to 256 per axis, so tile the complete declared volume,
+  // including empty cells. Empty trailing tiles carry extents without adding
+  // fake occupancy, and the editor's 1024-axis limit bounds this to 64 chunks.
+  for (let z = 0; z < storedSize.z; z += 256) {
+    for (let y = 0; y < storedSize.y; y += 256) {
+      for (let x = 0; x < storedSize.x; x += 256) {
+        const origin = { x, y, z };
+        chunks.set(`${x},${y},${z}`, {
+          origin,
+          size: {
+            x: Math.min(256, storedSize.x - x),
+            y: Math.min(256, storedSize.y - y),
+            z: Math.min(256, storedSize.z - z),
+          },
+          voxels: [],
+        });
+      }
+    }
+  }
+
   for (const voxel of model.voxels) {
     // MagicaVoxel uses Z-up. The preview/source model is Y-up, so swap Y and Z here.
     const coordinate = { x: voxel.x, y: voxel.z, z: voxel.y };
@@ -72,18 +95,16 @@ function partitionModel(model: VoxelModel): VoxChunk[] {
       z: Math.floor(coordinate.z / 256) * 256,
     };
     const key = `${origin.x},${origin.y},${origin.z}`;
-    let entry = chunks.get(key);
-    if (!entry) {
-      entry = { origin, size: { x: 1, y: 1, z: 1 }, voxels: [] };
-      chunks.set(key, entry);
-    }
+    const entry = chunks.get(key)!;
     const local = { x: coordinate.x - origin.x, y: coordinate.y - origin.y, z: coordinate.z - origin.z };
     entry.voxels.push({ ...local, colorIndex: voxel.colorIndex });
-    entry.size.x = Math.max(entry.size.x, local.x + 1);
-    entry.size.y = Math.max(entry.size.y, local.y + 1);
-    entry.size.z = Math.max(entry.size.z, local.z + 1);
   }
-  return [...chunks.values()].sort((a, b) => a.origin.z - b.origin.z || a.origin.y - b.origin.y || a.origin.x - b.origin.x);
+  return [...chunks.values()]
+    .sort((a, b) => a.origin.z - b.origin.z || a.origin.y - b.origin.y || a.origin.x - b.origin.x)
+    .map((part) => ({
+      ...part,
+      voxels: [...part.voxels].sort((a, b) => a.z - b.z || a.y - b.y || a.x - b.x || a.colorIndex - b.colorIndex),
+    }));
 }
 
 function modelChunks(part: VoxChunk): Uint8Array[] {
@@ -101,7 +122,7 @@ function modelChunks(part: VoxChunk): Uint8Array[] {
     xyzi[offset] = voxel.x;
     xyzi[offset + 1] = voxel.y;
     xyzi[offset + 2] = voxel.z;
-    xyzi[offset + 3] = Math.min(255, voxel.colorIndex + 1);
+    xyzi[offset + 3] = voxel.colorIndex + 1;
   });
   return [chunk('SIZE', size), chunk('XYZI', xyzi)];
 }
@@ -115,7 +136,10 @@ function sceneGraph(parts: VoxChunk[]): Uint8Array[] {
   const nodes = parts.flatMap((part, index) => {
     const transformId = transformIds[index];
     const shapeId = transformId + 1;
-    const translation = `${part.origin.x} ${part.origin.y} ${part.origin.z}`;
+    // Scene transforms place the model's center pivot, floor(SIZE / 2), in
+    // world space. Translating to origin + pivot preserves the chunk's original
+    // corner-origin coordinates in MagicaVoxel and other conforming readers.
+    const translation = `${part.origin.x + Math.floor(part.size.x / 2)} ${part.origin.y + Math.floor(part.size.y / 2)} ${part.origin.z + Math.floor(part.size.z / 2)}`;
     return [
       chunk('nTRN', concat([
         int32(transformId), dictionary(), int32(shapeId), int32(-1), int32(-1), int32(1), dictionary({ _t: translation }),
@@ -126,17 +150,44 @@ function sceneGraph(parts: VoxChunk[]): Uint8Array[] {
   return [rootTransform, rootGroup, ...nodes];
 }
 
-export function encodeVox(model: VoxelModel): Uint8Array {
-  const parts = partitionModel(model);
-  if (!parts.length) parts.push({ origin: { x: 0, y: 0, z: 0 }, size: { x: 1, y: 1, z: 1 }, voxels: [] });
-  if (parts.length === 1 && model.size.x <= 256 && model.size.y <= 256 && model.size.z <= 256) {
-    parts[0].size = { x: model.size.x, y: model.size.z, z: model.size.y };
+function validateModelCoordinates(model: VoxelModel) {
+  if (![model.size.x, model.size.y, model.size.z]
+    .every((dimension) => Number.isInteger(dimension) && dimension > 0 && dimension <= VOXEL_COORDINATE_LIMIT)) {
+    throw new RangeError(`VOX model dimensions must be integers between 1 and ${VOXEL_COORDINATE_LIMIT}.`);
   }
+  if (model.palette.length < 1 || model.palette.length > 255) {
+    throw new RangeError('VOX palettes must contain between 1 and 255 colors.');
+  }
+  for (const color of model.palette) {
+    if (![color.r, color.g, color.b].every((channel) => Number.isInteger(channel) && channel >= 0 && channel <= 255)) {
+      throw new RangeError('VOX palette channels must be integers between 0 and 255.');
+    }
+  }
+  const coordinates = new Set<string>();
+  for (const voxel of model.voxels) {
+    if (!isSupportedVoxelCoordinate(voxel)
+      || voxel.x >= model.size.x || voxel.y >= model.size.y || voxel.z >= model.size.z) {
+      throw new RangeError(`VOX voxel coordinates must be inside the model and between 0 and ${MAX_VOXEL_COORDINATE}.`);
+    }
+    if (!Number.isInteger(voxel.colorIndex) || voxel.colorIndex < 0 || voxel.colorIndex >= model.palette.length) {
+      throw new RangeError('VOX voxel color indices must reference an existing palette color.');
+    }
+    const key = `${voxel.x}:${voxel.y}:${voxel.z}`;
+    if (coordinates.has(key)) throw new RangeError('VOX models cannot contain duplicate voxel coordinates.');
+    coordinates.add(key);
+  }
+}
+
+export function encodeVox(model: VoxelModel): Uint8Array {
+  validateModelCoordinates(model);
+  const parts = partitionModel(model);
+  const needsSceneGraph = parts.length > 1
+    || parts.some((part) => part.origin.x !== 0 || part.origin.y !== 0 || part.origin.z !== 0);
   const childrenParts = [
     ...(parts.length > 1 ? [chunk('PACK', int32(parts.length))] : []),
     ...parts.flatMap(modelChunks),
     chunk('RGBA', makePalette(model.palette)),
-    ...(parts.length > 1 ? sceneGraph(parts) : []),
+    ...(needsSceneGraph ? sceneGraph(parts) : []),
   ];
 
   const children = concat(childrenParts);

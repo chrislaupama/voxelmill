@@ -1,6 +1,6 @@
 import { Bounds, Grid, OrbitControls } from '@react-three/drei';
-import { Canvas, type ThreeEvent } from '@react-three/fiber';
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Canvas, type ThreeEvent, useThree } from '@react-three/fiber';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   BoxGeometry,
   Color,
@@ -19,6 +19,8 @@ import type {
   VoxelModel,
 } from '../types';
 import type { PaletteRemapPlan } from '../lib/paletteRemap';
+import { brushCoordinates, type MirrorPlan } from '../lib/editVoxels';
+import { getExposedVoxels } from '../lib/exposedVoxels';
 import { packVoxelCoordinate } from '../lib/voxelIndex';
 
 interface Props {
@@ -28,11 +30,14 @@ interface Props {
   showGrid: boolean;
   tool: EditorTool;
   mirrorSettings: MirrorSettings;
-  mirrorPreview: Voxel[];
+  mirrorPlan: MirrorPlan | null;
   selectedVoxels: Voxel[];
   palettePreview?: PaletteRemapPlan | null;
   slice: { enabled: boolean; axis: MirrorSettings['axis']; index: number };
-  onVoxelAction: (voxel: Voxel, normal: VoxelCoordinate) => void;
+  brushRadius: number;
+  brushShape: 'sphere' | 'cube';
+  onVoxelAction: (voxel: Voxel, normal: VoxelCoordinate, phase: 'start' | 'continue') => void;
+  onVoxelActionEnd: () => void;
 }
 
 interface VoxelInstancesProps {
@@ -44,7 +49,9 @@ interface VoxelInstancesProps {
   interactive: boolean;
   onHover: (voxel: Voxel, normal: VoxelCoordinate) => void;
   onHoverEnd: () => void;
-  onAction: (voxel: Voxel, normal: VoxelCoordinate) => void;
+  continuous: boolean;
+  onAction: (voxel: Voxel, normal: VoxelCoordinate, phase: 'start' | 'continue') => void;
+  onActionEnd: () => void;
 }
 
 const faceNormal = (event: ThreeEvent<MouseEvent>): VoxelCoordinate => {
@@ -61,9 +68,15 @@ function VoxelInstances({
   interactive,
   onHover,
   onHoverEnd,
+  continuous,
   onAction,
+  onActionEnd,
 }: VoxelInstancesProps) {
   const mesh = useRef<InstancedMesh>(null);
+  const strokeActive = useRef(false);
+  const activePointerId = useRef<number | null>(null);
+  const lastAction = useRef<string | null>(null);
+  const eventSource = useThree((state) => state.gl.domElement);
   const material = useMemo(
     () => new MeshStandardMaterial({ color: '#ffffff', roughness: 0.78, metalness: 0.02 }),
     [],
@@ -83,6 +96,8 @@ function VoxelInstances({
       mesh.current!.setMatrixAt(index, helper.matrix);
     });
     mesh.current.instanceMatrix.needsUpdate = true;
+    mesh.current.computeBoundingBox();
+    mesh.current.computeBoundingSphere();
   }, [helper, size, voxels]);
 
   useLayoutEffect(() => {
@@ -108,6 +123,30 @@ function VoxelInstances({
   const voxelFromEvent = (event: ThreeEvent<MouseEvent>) =>
     event.instanceId === undefined ? undefined : voxels[event.instanceId];
 
+  const actionKey = (voxel: Voxel, normal: VoxelCoordinate) =>
+    `${voxel.x}:${voxel.y}:${voxel.z}:${normal.x}:${normal.y}:${normal.z}`;
+
+  const finishAction = useCallback((pointerId?: number) => {
+    if (pointerId !== undefined && activePointerId.current !== pointerId) return;
+    if (!strokeActive.current) return;
+    strokeActive.current = false;
+    activePointerId.current = null;
+    lastAction.current = null;
+    onActionEnd();
+  }, [onActionEnd]);
+
+  useEffect(() => {
+    const finishCapturedAction = (event: PointerEvent) => finishAction(event.pointerId);
+    eventSource.addEventListener('pointerup', finishCapturedAction);
+    eventSource.addEventListener('pointercancel', finishCapturedAction);
+    eventSource.addEventListener('lostpointercapture', finishCapturedAction);
+    return () => {
+      eventSource.removeEventListener('pointerup', finishCapturedAction);
+      eventSource.removeEventListener('pointercancel', finishCapturedAction);
+      eventSource.removeEventListener('lostpointercapture', finishCapturedAction);
+    };
+  }, [eventSource, finishAction]);
+
   return (
     <instancedMesh
       ref={mesh}
@@ -117,16 +156,41 @@ function VoxelInstances({
         const voxel = voxelFromEvent(event);
         if (!voxel) return;
         event.stopPropagation();
-        onHover(voxel, faceNormal(event));
+        const normal = faceNormal(event);
+        onHover(voxel, normal);
+        if (!continuous || !strokeActive.current || !(event.buttons & 1)) return;
+        const key = actionKey(voxel, normal);
+        if (key === lastAction.current) return;
+        lastAction.current = key;
+        onAction(voxel, normal, 'continue');
       }}
-      onPointerOut={() => interactive && onHoverEnd()}
-      onClick={(event) => {
+      onPointerOut={() => {
         if (!interactive) return;
+        onHoverEnd();
+      }}
+      onPointerDown={(event) => {
+        if (!interactive || event.button !== 0) return;
         const voxel = voxelFromEvent(event);
         if (!voxel) return;
         event.stopPropagation();
-        onAction(voxel, faceNormal(event));
+        const captureTarget = event.target as Element;
+        activePointerId.current = event.pointerId;
+        captureTarget.setPointerCapture(event.pointerId);
+        const normal = faceNormal(event);
+        strokeActive.current = true;
+        lastAction.current = actionKey(voxel, normal);
+        onAction(voxel, normal, 'start');
       }}
+      onPointerUp={(event) => {
+        if (activePointerId.current !== event.pointerId) return;
+        const captureTarget = event.target as Element;
+        if (captureTarget.hasPointerCapture(event.pointerId)) {
+          captureTarget.releasePointerCapture(event.pointerId);
+        }
+        finishAction(event.pointerId);
+      }}
+      onPointerCancel={(event) => finishAction(event.pointerId)}
+      onLostPointerCapture={(event) => finishAction(event.pointerId)}
     />
   );
 }
@@ -166,6 +230,8 @@ function GhostVoxels({ voxels, size, color = '#b5f43b', opacity = 0.26 }: GhostV
       mesh.current!.setMatrixAt(index, helper.matrix);
     });
     mesh.current.instanceMatrix.needsUpdate = true;
+    mesh.current.computeBoundingBox();
+    mesh.current.computeBoundingSphere();
   }, [helper, size, voxels]);
   return <instancedMesh ref={mesh} args={[geometry, material, voxels.length]} raycast={() => null} />;
 }
@@ -188,25 +254,34 @@ interface VoxelMeshProps {
   model: VoxelModel;
   tool: EditorTool;
   mirrorSettings: MirrorSettings;
-  mirrorPreview: Voxel[];
+  mirrorPlan: MirrorPlan | null;
   selectedVoxels: Voxel[];
   palettePreview?: PaletteRemapPlan | null;
   slice: Props['slice'];
+  brushRadius: number;
+  brushShape: Props['brushShape'];
   onVoxelAction: Props['onVoxelAction'];
+  onVoxelActionEnd: Props['onVoxelActionEnd'];
 }
 
-function VoxelMesh({ model, tool, mirrorSettings, mirrorPreview, selectedVoxels, palettePreview, slice, onVoxelAction }: VoxelMeshProps) {
+function VoxelMesh({ model, tool, mirrorSettings, mirrorPlan, selectedVoxels, palettePreview, slice, brushRadius, brushShape, onVoxelAction, onVoxelActionEnd }: VoxelMeshProps) {
   const [hovered, setHovered] = useState<VoxelCoordinate | null>(null);
   const geometry = useMemo(() => new BoxGeometry(0.94, 0.94, 0.94), []);
   const scale = 3.6 / Math.max(model.size.x, model.size.y, model.size.z);
   const interactive = tool !== 'orbit' && tool !== 'mirror';
   const visibleVoxels = useMemo(
-    () => slice.enabled ? model.voxels.filter((voxel) => voxel[slice.axis] === slice.index) : model.voxels,
+    () => slice.enabled
+      ? model.voxels.filter((voxel) => voxel[slice.axis] === slice.index)
+      : getExposedVoxels(model.voxels),
     [model.voxels, slice.axis, slice.enabled, slice.index],
   );
   const visibleSelection = useMemo(
-    () => slice.enabled ? selectedVoxels.filter((voxel) => voxel[slice.axis] === slice.index) : selectedVoxels,
-    [selectedVoxels, slice.axis, slice.enabled, slice.index],
+    () => {
+      if (slice.enabled) return selectedVoxels.filter((voxel) => voxel[slice.axis] === slice.index);
+      const selectedCoordinates = new Set(selectedVoxels.map(packVoxelCoordinate));
+      return visibleVoxels.filter((voxel) => selectedCoordinates.has(packVoxelCoordinate(voxel)));
+    },
+    [selectedVoxels, slice.axis, slice.enabled, slice.index, visibleVoxels],
   );
 
   const updateHover = (voxel: Voxel, normal: VoxelCoordinate) => {
@@ -216,6 +291,23 @@ function VoxelMesh({ model, tool, mirrorSettings, mirrorPreview, selectedVoxels,
   };
 
   const hoverColor = tool === 'remove' ? '#ff625f' : tool === 'paint' || tool === 'fill' ? '#6dc8ff' : '#b5f43b';
+  const hoverCoordinates = useMemo(() => {
+    if (!hovered) return [];
+    if (tool !== 'add' && tool !== 'remove' && tool !== 'paint') return [hovered];
+    return brushCoordinates(
+      hovered,
+      brushRadius,
+      tool === 'add' ? undefined : model.size,
+      brushShape,
+    );
+  }, [brushRadius, brushShape, hovered, model.size, tool]);
+  const hoverVoxels = useMemo(() => hoverCoordinates.map((coordinate) => ({
+    ...coordinate,
+    r: 255,
+    g: 255,
+    b: 255,
+    colorIndex: 0,
+  })), [hoverCoordinates]);
 
   return (
     <group scale={scale}>
@@ -226,27 +318,19 @@ function VoxelMesh({ model, tool, mirrorSettings, mirrorPreview, selectedVoxels,
         palette={model.palette}
         palettePreview={palettePreview}
         interactive={interactive}
+        continuous={tool === 'select' || tool === 'add' || tool === 'remove' || tool === 'paint'}
         onHover={updateHover}
         onHoverEnd={() => setHovered(null)}
         onAction={onVoxelAction}
+        onActionEnd={onVoxelActionEnd}
       />
-      {hovered && interactive ? (
-        <mesh
-          position={[
-            hovered.x - (model.size.x - 1) / 2,
-            hovered.y - (model.size.y - 1) / 2,
-            hovered.z - (model.size.z - 1) / 2,
-          ]}
-          raycast={() => null}
-        >
-          <boxGeometry args={[1.06, 1.06, 1.06]} />
-          <meshBasicMaterial color={hoverColor} wireframe transparent opacity={0.95} depthWrite={false} />
-        </mesh>
-      ) : null}
+      {hoverVoxels.length && interactive ? <GhostVoxels voxels={hoverVoxels} size={model.size} color={hoverColor} opacity={0.28} /> : null}
       {tool === 'mirror' ? (
         <>
           <MirrorPlane size={model.size} settings={mirrorSettings} />
-          <GhostVoxels voxels={mirrorPreview} size={model.size} />
+          {mirrorPlan?.removals.length ? <GhostVoxels voxels={mirrorPlan.removals} size={model.size} color="#ff625f" opacity={0.34} /> : null}
+          {mirrorPlan?.overwrites.length ? <GhostVoxels voxels={mirrorPlan.overwrites} size={model.size} color="#ffb84d" opacity={0.42} /> : null}
+          {mirrorPlan?.additions.length ? <GhostVoxels voxels={mirrorPlan.additions} size={model.size} color="#b5f43b" opacity={0.34} /> : null}
         </>
       ) : null}
       {visibleSelection.length ? <GhostVoxels voxels={visibleSelection} size={model.size} color="#75c9ff" opacity={0.38} /> : null}
@@ -266,11 +350,14 @@ export function ModelViewport({
   showGrid,
   tool,
   mirrorSettings,
-  mirrorPreview,
+  mirrorPlan,
   selectedVoxels,
   palettePreview,
   slice,
+  brushRadius,
+  brushShape,
   onVoxelAction,
+  onVoxelActionEnd,
 }: Props) {
   return (
     <Canvas
@@ -294,11 +381,14 @@ export function ModelViewport({
             model={model}
             tool={tool}
             mirrorSettings={mirrorSettings}
-            mirrorPreview={mirrorPreview}
+            mirrorPlan={mirrorPlan}
             selectedVoxels={selectedVoxels}
             palettePreview={palettePreview}
             slice={slice}
+            brushRadius={brushRadius}
+            brushShape={brushShape}
             onVoxelAction={onVoxelAction}
+            onVoxelActionEnd={onVoxelActionEnd}
           />
         ) : null}
       </Bounds>
@@ -314,7 +404,7 @@ export function ModelViewport({
           infiniteGrid
         />
       ) : null}
-      <OrbitControls makeDefault enableDamping dampingFactor={0.08} minDistance={2.5} maxDistance={14} />
+      <OrbitControls makeDefault enabled={mode !== 'voxel' || tool === 'orbit' || tool === 'mirror'} enableDamping dampingFactor={0.08} minDistance={2.5} maxDistance={14} />
     </Canvas>
   );
 }

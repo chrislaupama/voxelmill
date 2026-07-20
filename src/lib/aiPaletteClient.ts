@@ -4,27 +4,27 @@ import {
   type AiPaletteResponse,
 } from './aiPaletteContract';
 
-const CLIENT_STORAGE_KEY = 'voxelmill-ai-client';
 const AI_PALETTE_ENDPOINT = import.meta.env.VITE_AI_PALETTE_ENDPOINT || 'https://api.voxelmill.com/v1/palette';
+const LEGACY_CLIENT_STORAGE_KEY = 'voxelmill-ai-client';
 
-function clientId() {
+export function clearLegacyAiClientId(
+  storageProvider: () => Pick<Storage, 'removeItem'> = () => window.localStorage,
+): void {
   try {
-    const existing = window.localStorage.getItem(CLIENT_STORAGE_KEY);
-    if (existing) return existing;
-    const created = crypto.randomUUID();
-    window.localStorage.setItem(CLIENT_STORAGE_KEY, created);
-    return created;
+    const storage = storageProvider();
+    storage.removeItem(LEGACY_CLIENT_STORAGE_KEY);
   } catch {
-    return crypto.randomUUID();
+    // Privacy cleanup is best-effort when storage is blocked or unavailable.
   }
 }
+
+if (typeof window !== 'undefined') clearLegacyAiClientId();
 
 export async function requestAiPalettes(request: AiPaletteRequest, signal?: AbortSignal): Promise<AiPaletteResponse> {
   const response = await fetch(AI_PALETTE_ENDPOINT, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-voxelmill-client': clientId(),
     },
     body: JSON.stringify(request),
     signal,

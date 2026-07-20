@@ -15,9 +15,29 @@
     "binding": "AI",
     "remote": true
   },
+  "vars": {
+    "AI_PALETTE_ENABLED": "false",
+    "AI_PALETTE_MODEL": "@cf/meta/llama-3.1-8b-instruct-fast",
+    "AI_DAILY_REQUEST_LIMIT": "100",
+    "AI_REQUEST_DEADLINE_MS": "20000"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "AI_DAILY_ALLOWANCE",
+        "class_name": "AiDailyInferenceAllowance"
+      }
+    ]
+  },
+  "exports": {
+    "AiDailyInferenceAllowance": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
   "ratelimits": [
     {
-      "name": "CLIENT_RATE_LIMITER",
+      "name": "CALLER_RATE_LIMITER",
       "namespace_id": "1401",
       "simple": {
         "limit": 8,
@@ -25,12 +45,24 @@
       }
     },
     {
-      "name": "IP_RATE_LIMITER",
+      "name": "EDGE_RATE_LIMITER",
       "namespace_id": "1402",
       "simple": {
         "limit": 40,
         "period": 60
       }
     }
-  ]
+  ],
+  "observability": {
+    "enabled": false,
+    "logs": {
+      "enabled": false,
+      "invocation_logs": false,
+      "persist": false
+    },
+    "traces": {
+      "enabled": false,
+      "persist": false
+    }
+  }
 }

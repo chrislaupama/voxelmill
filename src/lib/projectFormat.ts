@@ -1,4 +1,5 @@
 import type { FillMode, MaterialColorMode, SamplingQuality, VoxelModel, VoxelizeOptions } from '../types';
+import { isSupportedVoxelCoordinate, VOXEL_COORDINATE_LIMIT } from './voxelIndex';
 
 const MAGIC = [0x56, 0x58, 0x4d, 0x50] as const; // VXMP
 const VERSION = 1;
@@ -27,11 +28,12 @@ function validateManifest(value: unknown): ProjectManifest {
   const options = manifest.options;
   if (typeof manifest.sourceName !== 'string' || !manifest.sourceName
     || typeof manifest.voxelSize !== 'number' || !Number.isFinite(manifest.voxelSize) || manifest.voxelSize <= 0
-    || !size || ![size.x, size.y, size.z].every((dimension) => Number.isInteger(dimension) && dimension > 0 && dimension <= 65535)
+    || !size || ![size.x, size.y, size.z].every((dimension) => Number.isInteger(dimension) && dimension > 0 && dimension <= VOXEL_COORDINATE_LIMIT)
     || !options
-    || !Number.isInteger(options.resolution) || options.resolution < 1
+    || !Number.isInteger(options.resolution) || options.resolution < 1 || options.resolution > VOXEL_COORDINATE_LIMIT
     || !Number.isInteger(options.paletteSize) || options.paletteSize < 1 || options.paletteSize > 255
-    || typeof options.alphaThreshold !== 'number' || options.alphaThreshold < 0 || options.alphaThreshold > 1
+    || typeof options.alphaThreshold !== 'number' || !Number.isFinite(options.alphaThreshold)
+    || options.alphaThreshold < 0 || options.alphaThreshold > 1
     || !validChoice<FillMode>(options.fillMode, ['surface', 'solid'])
     || !validChoice<SamplingQuality>(options.samplingQuality, ['draft', 'balanced', 'high'])
     || !validChoice<MaterialColorMode>(options.materialColorMode, ['baseColor', 'appearance'])) {
@@ -71,8 +73,8 @@ export function encodeVoxelMillProject({ model, options }: VoxelMillProject): Ar
   }
   const coordinates = new Set<string>();
   for (const voxel of model.voxels) {
-    if (![voxel.x, voxel.y, voxel.z, voxel.colorIndex].every(Number.isInteger)
-      || voxel.x < 0 || voxel.y < 0 || voxel.z < 0
+    if (!isSupportedVoxelCoordinate(voxel)
+      || !Number.isInteger(voxel.colorIndex)
       || voxel.x >= model.size.x || voxel.y >= model.size.y || voxel.z >= model.size.z
       || voxel.colorIndex < 0 || voxel.colorIndex >= model.palette.length) {
       throw new Error('The project contains an invalid voxel coordinate or palette index.');
@@ -123,7 +125,8 @@ export function decodeVoxelMillProject(buffer: ArrayBuffer): VoxelMillProject {
     const z = view.getUint16(cursor + 4, true);
     const colorIndex = bytes[cursor + 6];
     cursor += VOXEL_BYTES;
-    if (x >= manifest.size.x || y >= manifest.size.y || z >= manifest.size.z || colorIndex >= palette.length) {
+    if (!isSupportedVoxelCoordinate({ x, y, z })
+      || x >= manifest.size.x || y >= manifest.size.y || z >= manifest.size.z || colorIndex >= palette.length) {
       throw new Error('The VoxelMill project contains invalid voxel data.');
     }
     const coordinate = `${x}:${y}:${z}`;

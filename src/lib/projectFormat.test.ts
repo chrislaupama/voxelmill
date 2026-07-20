@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { VoxelMillProject } from './projectFormat';
 import { decodeVoxelMillProject, encodeVoxelMillProject } from './projectFormat';
+import { MAX_VOXEL_COORDINATE, VOXEL_COORDINATE_LIMIT } from './voxelIndex';
 
 const project: VoxelMillProject = {
   options: {
@@ -34,6 +35,28 @@ describe('.voxelmill project format', () => {
     expect(two.byteLength - one.byteLength).toBe(7);
   });
 
+  it('round-trips the maximum editor coordinate without truncation', () => {
+    const boundary: VoxelMillProject = {
+      ...project,
+      options: { ...project.options, resolution: VOXEL_COORDINATE_LIMIT },
+      model: {
+        ...project.model,
+        size: { x: VOXEL_COORDINATE_LIMIT, y: VOXEL_COORDINATE_LIMIT, z: VOXEL_COORDINATE_LIMIT },
+        voxels: [{
+          x: MAX_VOXEL_COORDINATE,
+          y: MAX_VOXEL_COORDINATE,
+          z: MAX_VOXEL_COORDINATE,
+          colorIndex: 0,
+          r: 20,
+          g: 30,
+          b: 40,
+        }],
+      },
+    };
+
+    expect(decodeVoxelMillProject(encodeVoxelMillProject(boundary))).toEqual(boundary);
+  });
+
   it('rejects wrong magic, unsupported versions, and truncated payloads', () => {
     const encoded = encodeVoxelMillProject(project);
     const wrongMagic = encoded.slice(0);
@@ -58,5 +81,62 @@ describe('.voxelmill project format', () => {
       ...project,
       model: { ...project.model, voxels: [project.model.voxels[0], { ...project.model.voxels[0] }] },
     })).toThrow('duplicate voxel');
+  });
+
+  it('rejects model dimensions, options, and voxel coordinates beyond the editor limit', () => {
+    expect(() => encodeVoxelMillProject({
+      ...project,
+      model: { ...project.model, size: { ...project.model.size, x: VOXEL_COORDINATE_LIMIT + 1 } },
+    })).toThrow('manifest contains invalid values');
+    expect(() => encodeVoxelMillProject({
+      ...project,
+      options: { ...project.options, resolution: VOXEL_COORDINATE_LIMIT + 1 },
+    })).toThrow('manifest contains invalid values');
+    expect(() => encodeVoxelMillProject({
+      ...project,
+      model: {
+        ...project.model,
+        size: { ...project.model.size, x: VOXEL_COORDINATE_LIMIT },
+        voxels: [{ ...project.model.voxels[0], x: VOXEL_COORDINATE_LIMIT }],
+      },
+    })).toThrow('invalid voxel coordinate');
+  });
+
+  it('rejects non-finite alpha thresholds during encoding and decoding', () => {
+    expect(() => encodeVoxelMillProject({
+      ...project,
+      options: { ...project.options, alphaThreshold: Number.NaN },
+    })).toThrow('manifest contains invalid values');
+
+    const encoded = encodeVoxelMillProject(project);
+    const bytes = new Uint8Array(encoded);
+    const view = new DataView(encoded);
+    const manifestLength = view.getUint32(6, true);
+    const manifest = new TextDecoder().decode(bytes.subarray(16, 16 + manifestLength));
+    const invalidManifest = manifest.replace('"alphaThreshold":0.1', '"alphaThreshold":1e999');
+    expect(invalidManifest).not.toBe(manifest);
+    const invalidManifestBytes = new TextEncoder().encode(invalidManifest);
+    const decoded = new Uint8Array(encoded.byteLength + invalidManifestBytes.byteLength - manifestLength);
+    decoded.set(bytes.subarray(0, 16), 0);
+    new DataView(decoded.buffer).setUint32(6, invalidManifestBytes.byteLength, true);
+    decoded.set(invalidManifestBytes, 16);
+    decoded.set(bytes.subarray(16 + manifestLength), 16 + invalidManifestBytes.byteLength);
+
+    expect(() => decodeVoxelMillProject(decoded.buffer)).toThrow('manifest contains invalid values');
+  });
+
+  it('rejects an imported manifest that claims dimensions beyond the runtime contract', () => {
+    const boundary = encodeVoxelMillProject({
+      ...project,
+      model: { ...project.model, size: { ...project.model.size, x: VOXEL_COORDINATE_LIMIT } },
+    });
+    const bytes = new Uint8Array(boundary);
+    const manifestLength = new DataView(boundary).getUint32(6, true);
+    const manifest = new TextDecoder().decode(bytes.subarray(16, 16 + manifestLength));
+    const invalidManifest = manifest.replace(`"x":${VOXEL_COORDINATE_LIMIT}`, `"x":${VOXEL_COORDINATE_LIMIT + 1}`);
+    expect(invalidManifest).not.toBe(manifest);
+    bytes.set(new TextEncoder().encode(invalidManifest), 16);
+
+    expect(() => decodeVoxelMillProject(boundary)).toThrow('manifest contains invalid values');
   });
 });

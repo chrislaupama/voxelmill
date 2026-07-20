@@ -15,6 +15,7 @@
     "build:api": "tsc -p workers/ai-api/tsconfig.json && wrangler deploy --dry-run --config workers/ai-api/wrangler.jsonc --outdir .wrangler/ai-api",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:e2e:real-assets": "playwright test --config playwright.real-assets.config.ts",
     "check": "npm test && npm run build && npm run build:api && npm run check:bundle",
     "check:bundle": "node scripts/check-bundle.mjs",
     "check:assets": "node scripts/verify-assets.mjs",

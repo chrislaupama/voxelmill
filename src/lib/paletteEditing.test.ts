@@ -19,6 +19,14 @@ describe('palette editing', () => {
     expect(result.voxels[1].colorIndex).toBe(1);
   });
 
+  it('retains one valid swatch when compacting an empty model', () => {
+    const empty = { ...model(), voxels: [] };
+    const result = compactPalette(empty);
+
+    expect(result.palette).toEqual([empty.palette[0]]);
+    expect(result.voxels).toEqual([]);
+  });
+
   it('sorts colors while preserving each voxel appearance', () => {
     const before = model();
     const result = sortPalette(before, 'luminance');

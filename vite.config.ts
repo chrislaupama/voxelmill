@@ -7,6 +7,7 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     server: {
       port: 4173,
+      hmr: process.env.VOXEL_REAL_ASSET_GATE === '1' ? false : undefined,
       fs: {
         allow: [searchForWorkspaceRoot('.'), ...(testAssetDirectory ? [testAssetDirectory] : [])],
       },

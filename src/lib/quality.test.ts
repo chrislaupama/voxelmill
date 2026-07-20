@@ -51,6 +51,14 @@ describe('conversion quality metrics', () => {
     expect(metrics.mean).toBe(0);
   });
 
+  it('counts duplicate expected coordinates once when measuring color coverage', () => {
+    const blue = voxel(0, 0, 0, 1);
+    const metrics = compareVoxelColors([blue], [voxel(0), blue]);
+
+    expect(metrics).toMatchObject({ matched: 1, actual: 1, expected: 1, coverage: 1, max: 0 });
+    expect(metrics.matched).toBeLessThanOrEqual(metrics.expected);
+  });
+
   it('fingerprints model content independently of voxel ordering', () => {
     const makeModel = (voxels: Voxel[]): VoxelModel => ({
       voxels,
@@ -63,5 +71,23 @@ describe('conversion quality metrics', () => {
       .toBe(voxelModelFingerprint(makeModel([voxel(1, 0, 0, 1), voxel(0)])));
     expect(voxelModelFingerprint(makeModel([voxel(0)])))
       .not.toBe(voxelModelFingerprint(makeModel([voxel(1)])));
+  });
+
+  it('fingerprints high coordinate bits and physical voxel scale', () => {
+    const base: VoxelModel = {
+      voxels: [voxel(0)],
+      palette: [{ r: 255, g: 0, b: 0 }],
+      size: { x: 300, y: 1, z: 1 },
+      voxelSize: 0.25,
+      sourceName: 'quality.glb',
+    };
+    expect(voxelModelFingerprint(base)).not.toBe(voxelModelFingerprint({
+      ...base,
+      voxels: [voxel(256)],
+    }));
+    expect(voxelModelFingerprint(base)).not.toBe(voxelModelFingerprint({
+      ...base,
+      voxelSize: 0.5,
+    }));
   });
 });

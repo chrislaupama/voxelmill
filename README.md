@@ -6,7 +6,7 @@ VoxelMill is a local-first browser application for converting textured GLB model
 
 ## What it does
 
-- Loads self-contained `.glb` models in the browser.
+- Loads self-contained `.glb`, MagicaVoxel `.vox`, and VoxelMill project files in the browser.
 - Intersects mesh triangles with a configurable voxel grid.
 - Samples each material's base color and embedded base-color texture using interpolated UVs.
 - Reduces sampled colors with weighted OKLab clustering to a configurable palette of up to 255 colors.
@@ -15,15 +15,14 @@ VoxelMill is a local-first browser application for converting textured GLB model
 - Honors glTF material alpha cutoffs and can optionally bake emissive color/texture details.
 - Produces either a hollow surface shell or a flood-filled solid volume.
 - Previews the result with instanced Three.js geometry.
-- Adds, erases, and paints voxels directly in the 3D viewport.
-- Supports palette swatches, exact custom hex colors, and undo/redo history.
-- Offers an opt-in AI Palette Studio that proposes three art directions from a prompt, previews them on the model, preserves locked swatches, and applies either the whole model or the current selection.
-- Keeps AI recoloring deterministic and local: the service receives only the prompt, swatches, lock flags, and color usage counts—never the GLB, voxel geometry, or coordinates.
-- Mirrors either side across a selectable X/Y/Z grid plane with a live ghost preview.
-- Exports MagicaVoxel VOX 150 files and palette PNGs.
-- Exports large positioned VOX scenes, exact-color Qubicle Binary files, and scripted project conversions.
+- Adds, erases, paints, flood-fills, selects, moves, and rotates voxels directly in the 3D viewport, including continuous brush strokes and slice editing.
+- Supports palette swatches, exact custom hex colors, source/target mapping inspection, and undo/redo history.
+- Defaults Palette Studio to local reference-image extraction: PNG, JPEG, and WebP images become structured 4–20-color palettes without an upload, AI request, or billable resource.
+- Offers optional AI art direction behind an explicit source switch. The service receives only the prompt, swatches, lock flags, and color usage counts—never the GLB, reference image, voxel geometry, or coordinates.
+- Mirrors a selection or an entire side across an exact X/Y/Z grid boundary with live add/replace/remove previews and safe grid expansion.
+- Exports large positioned MagicaVoxel VOX 150 scenes, exact-color Qubicle Binary files, greedy-meshed voxel GLBs, VoxelMill projects, and palette PNGs.
 - Saves compact, versioned `.voxelmill` project files that preserve conversion settings and editable voxel data.
-- Autosaves project bytes to IndexedDB for local crash/reload recovery; model data is never uploaded.
+- Autosaves project bytes and bounded deduplicated recovery snapshots to IndexedDB for local crash/reload recovery; model data is never uploaded.
 
 ## VoxelMill projects
 
@@ -48,11 +47,13 @@ This runs unit tests, creates the static output in `dist/`, and enforces the bun
 
 Browser release checks run with `npm run test:e2e`. The complete deployment checklist is in [docs/release.md](docs/release.md).
 
-## AI Palette Studio
+## Palette Studio and optional AI
 
-Palette generation runs through a rate-limited Cloudflare Worker at `api.voxelmill.com`. Workers AI creates palette concepts; VoxelMill performs the source-color mapping locally by palette index so the result remains coherent instead of assigning random colors per voxel. Whole-model recolors use compact typed-array history patches, making one-step undo practical on large assets.
+The default Palette Studio path extracts a palette from a reference image entirely in the browser. Deterministic hue-family and material-ramp matching then maps source colors coherently instead of assigning colors independently per voxel. Users can inspect every source-to-target mapping, preview it on the model, and apply the exact preview as one undoable edit.
 
-AI requests contain the prompt, palette swatches, lock flags, and color usage counts. They also include a stable, randomly generated installation ID; Cloudflare processes the request's network IP as a separate rate-limit safeguard. Neither identifier is used to upload model data: GLBs, voxel geometry, and voxel coordinates remain in the browser.
+Optional AI palette generation is implemented behind a rate-limited Cloudflare Worker at `api.voxelmill.com`. AI requests contain the prompt, palette swatches, lock flags, and color usage counts. Reference images, GLBs, voxel geometry, and voxel coordinates remain in the browser.
+
+The committed production configuration keeps AI inference disabled, so the current live app makes no billable Workers AI inference requests. The local reference-image workflow remains fully available. Before AI is deliberately enabled, the Worker requires a private HMAC secret and additional server-verified bot control; it then fails closed behind server-derived caller/edge limits, a global 100-attempt UTC-day ceiling, and a 20-second deadline. Worker invocation logs and traces are disabled.
 
 The production API configuration is in `workers/ai-api/wrangler.jsonc`:
 
@@ -60,6 +61,8 @@ The production API configuration is in `workers/ai-api/wrangler.jsonc`:
 npm run build:api   # type-check and dry-run bundle
 npm run deploy:api  # publish the API Worker
 ```
+
+AI also requires an explicit `VITE_AI_PALETTE_ENABLED=true` frontend build. Leave it unset while production inference is paused.
 
 No provider key is needed for Workers AI. Text/image-to-3D generation has a provider-neutral job contract but remains disabled until a paid generation provider and private artifact storage are configured. See [the AI roadmap](docs/ai-roadmap.md).
 

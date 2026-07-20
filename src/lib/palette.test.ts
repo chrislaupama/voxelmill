@@ -3,8 +3,12 @@ import { buildPalette, linearToSrgb, nearestPaletteIndex, srgbToLinear } from '.
 
 describe('perceptual palette generation', () => {
   it('round-trips sRGB values through linear light', () => {
+    expect(linearToSrgb(srgbToLinear(0))).toBe(0);
+    expect(linearToSrgb(srgbToLinear(1))).toBe(1);
+    expect(linearToSrgb(srgbToLinear(2))).toBe(2);
     expect(linearToSrgb(srgbToLinear(128))).toBe(128);
     expect(linearToSrgb(srgbToLinear(240))).toBe(240);
+    expect(linearToSrgb(srgbToLinear(255))).toBe(255);
   });
 
   it('preserves separated dominant colors with a small palette', () => {
